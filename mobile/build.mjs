@@ -26,7 +26,7 @@ await build({
   bundle: true,
   format: 'iife',
   platform: 'browser',
-  target: ['safari16'],
+  target: ['safari15'],
   minify: true,
   sourcemap: 'linked',
   legalComments: 'none',
