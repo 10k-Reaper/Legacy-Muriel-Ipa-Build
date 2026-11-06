@@ -1,0 +1,15 @@
+diff --git a/google-library.js b/google-library.js
+index bed6d51..41fa286 100644
+--- a/google-library.js
++++ b/google-library.js
+@@ -175,7 +175,9 @@ async function importLibrary(opts) {
+       body: JSON.stringify({ context: { client }, ...body }),
+       // the session's Google cookies go with it (Electron's fetch leaves cookies out unless asked)
+       credentials: 'include',
+-      signal: AbortSignal.timeout(20000),
++      signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
++        ? AbortSignal.timeout(20000)
++        : undefined,
+     });
+     if (res.status === 401 || res.status === 403) { const e = new Error('Google refused: log in again'); e.code = 'not_logged_in'; throw e; }
+     if (!res.ok) throw new Error(`YouTube answered ${res.status}`);

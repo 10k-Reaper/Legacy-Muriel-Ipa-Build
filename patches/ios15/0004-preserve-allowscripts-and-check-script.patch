@@ -1,0 +1,23 @@
+diff --git a/package.json b/package.json
+index 1e6747b..8b92539 100644
+--- a/package.json
++++ b/package.json
+@@ -8,6 +8,7 @@
+   "scripts": {
+     "start": "electron .",
+     "test": "node --test",
++    "check:ios15": "node tools/check-ios15-compat.mjs",
+     "dist": "electron-builder",
+     "release": "npm version patch && git push --follow-tags",
+     "release:minor": "npm version minor && git push --follow-tags",
+@@ -132,5 +133,10 @@
+         "releaseType": "release"
+       }
+     ]
++  },
++  "allowScripts": {
++    "electron@41.10.7": true,
++    "electron-winstaller@5.4.0": true,
++    "esbuild@0.28.2": true
+   }
+ }

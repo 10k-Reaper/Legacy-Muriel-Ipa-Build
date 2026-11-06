@@ -1,0 +1,294 @@
+diff --git a/tools/check-ios15-compat.mjs b/tools/check-ios15-compat.mjs
+new file mode 100644
+index 0000000..704c739
+--- /dev/null
++++ b/tools/check-ios15-compat.mjs
+@@ -0,0 +1,288 @@
++#!/usr/bin/env node
++// Static gate for the iOS 15.0 fork. It runs on Windows, Linux and macOS, so the web/API
++// checks can fail before a macOS runner spends time on xcodebuild.
++//
++// Critical checks (exit 1):
++//   - app/project deployment target is 15.0; the MurielWidgets extension stays at 16.2
++//   - CapApp-SPM still targets iOS 15
++//   - the mobile bundle is built for Safari 15
++//   - every plain <script> in index.html is copied by mobile/build.mjs
++//   - background audio and the muriel:// URL scheme stay declared
++//   - known iOS 16.2+ web APIs are behind a feature check
++//   - ActivityKit code in the app target is availability-guarded
++//
++// Warnings (exit 0):
++//   - CSS features that Safari 15.0 does not understand but that degrade visually
++//   - legacy Info.plist metadata and missing local policy entries
++
++import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
++import { dirname, join, relative, resolve } from 'node:path';
++import { fileURLToPath } from 'node:url';
++
++const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
++const failures = [];
++const warnings = [];
++const fail = (message) => failures.push(message);
++const warn = (message) => warnings.push(message);
++const read = (path) => readFileSync(join(root, path), 'utf8');
++const has = (path) => existsSync(join(root, path));
++const rel = (path) => relative(root, path).replaceAll('\\', '/');
++
++function filesIn(dir) {
++  if (!existsSync(dir)) return [];
++  return readdirSync(dir)
++    .map((name) => join(dir, name))
++    .filter((path) => statSync(path).isFile());
++}
++
++function lineNumber(text, index) {
++  return text.slice(0, index).split('\n').length;
++}
++
++function nearby(lines, index, patterns) {
++  const from = Math.max(0, index - 2);
++  const to = Math.min(lines.length - 1, index + 2);
++  for (let i = from; i <= to; i += 1) {
++    if (patterns.some((pattern) => pattern.test(lines[i]))) return true;
++  }
++  return false;
++}
++
++// ---------------------------------------------------------------------------
++// Xcode deployment targets
++// ---------------------------------------------------------------------------
++
++const pbxPath = 'ios/App/App.xcodeproj/project.pbxproj';
++if (!has(pbxPath)) {
++  fail(`${pbxPath} is missing`);
++} else {
++  const pbx = read(pbxPath);
++  const start = pbx.indexOf('/* Begin XCBuildConfiguration section */');
++  const end = pbx.indexOf('/* End XCBuildConfiguration section */');
++  if (start < 0 || end < 0) {
++    fail(`${pbxPath}: cannot find XCBuildConfiguration section`);
++  } else {
++    const section = pbx.slice(start, end);
++    const blocks = [];
++    let depth = 0;
++    let opened = -1;
++    for (let i = 0; i < section.length; i += 1) {
++      if (section[i] === '{') {
++        if (depth === 0) opened = i;
++        depth += 1;
++      } else if (section[i] === '}') {
++        depth -= 1;
++        if (depth === 0 && opened >= 0) {
++          blocks.push(section.slice(opened, i + 1));
++          opened = -1;
++        }
++      }
++    }
++
++    const appBlocks = blocks.filter((block) => /INFOPLIST_FILE = App\/Info\.plist;/.test(block));
++    const widgetBlocks = blocks.filter((block) => /INFOPLIST_FILE = MurielWidgets\/Info\.plist;/.test(block));
++    if (appBlocks.length !== 2) fail(`${pbxPath}: expected 2 App build configurations, found ${appBlocks.length}`);
++    if (widgetBlocks.length !== 2) fail(`${pbxPath}: expected 2 MurielWidgets build configurations, found ${widgetBlocks.length}`);
++
++    for (const block of blocks) {
++      const target = (block.match(/IPHONEOS_DEPLOYMENT_TARGET = ([^;]+);/) || [])[1]?.trim();
++      if (!target) continue;
++      const isWidget = /INFOPLIST_FILE = MurielWidgets\/Info\.plist;/.test(block);
++      if (isWidget && target !== '16.2') {
++        fail(`${pbxPath}: MurielWidgets deployment target is ${target}, expected 16.2`);
++      }
++      if (!isWidget && target !== '15.0') {
++        fail(`${pbxPath}: app/project deployment target is ${target}, expected 15.0`);
++      }
++    }
++  }
++}
++
++const packageSwiftPath = 'ios/App/CapApp-SPM/Package.swift';
++if (!has(packageSwiftPath)) {
++  fail(`${packageSwiftPath} is missing`);
++} else if (!/platforms:\s*\[\.iOS\(\.v15\)\]/.test(read(packageSwiftPath))) {
++  fail(`${packageSwiftPath}: expected platforms: [.iOS(.v15)]`);
++}
++
++// ---------------------------------------------------------------------------
++// Mobile web bundle
++// ---------------------------------------------------------------------------
++
++const buildPath = 'mobile/build.mjs';
++if (!has(buildPath)) {
++  fail(`${buildPath} is missing`);
++} else {
++  const build = read(buildPath);
++  if (!/target:\s*\['safari15'\]/.test(build)) {
++    fail(`${buildPath}: esbuild target must stay ['safari15']`);
++  }
++
++  const listMatch = build.match(/for \(const f of \[([\s\S]*?)\]\) cpSync/);
++  if (!listMatch) {
++    fail(`${buildPath}: cannot find the browser-script copy list`);
++  } else {
++    const copied = new Set([...listMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1]));
++    const html = read('index.html');
++    for (const match of html.matchAll(/<script[^>]+src="([^"]+)"/g)) {
++      const src = match[1];
++      if (/^https?:/.test(src) || src.startsWith('assets/')) continue;
++      if (src === 'build-info.js' || src === 'mobile-bridge.js') continue; // generated
++      if (!copied.has(src)) {
++        fail(`index.html loads ${src}, but mobile/build.mjs does not copy it into www/`);
++      }
++    }
++  }
++}
++
++// ---------------------------------------------------------------------------
++// App Info.plist
++// ---------------------------------------------------------------------------
++
++const plistPath = 'ios/App/App/Info.plist';
++if (!has(plistPath)) {
++  fail(`${plistPath} is missing`);
++} else {
++  const plist = read(plistPath);
++  if (!/<key>UIBackgroundModes<\/key>\s*<array>\s*<string>audio<\/string>/.test(plist)) {
++    fail(`${plistPath}: UIBackgroundModes must contain audio`);
++  }
++  if (!plist.includes('<key>NSSupportsLiveActivities</key>')) {
++    warn(`${plistPath}: NSSupportsLiveActivities is missing; the iOS 16.2+ widget will not start`);
++  }
++  if (!plist.includes('<key>CFBundleURLTypes</key>') || !plist.includes('<string>muriel</string>')) {
++    fail(`${plistPath}: the muriel:// URL scheme is missing`);
++  }
++  if (/<key>UIRequiredDeviceCapabilities<\/key>\s*<array>\s*<string>armv7<\/string>/.test(plist)) {
++    warn(`${plistPath}: UIRequiredDeviceCapabilities still lists armv7; an iOS 15+ build is arm64-only`);
++  }
++}
++
++// ---------------------------------------------------------------------------
++// JavaScript APIs newer than iOS 15.0
++// ---------------------------------------------------------------------------
++
++const jsFiles = [
++  ...filesIn(root).filter((path) => path.endsWith('.js')),
++  ...filesIn(join(root, 'mobile')).filter((path) => path.endsWith('.js')),
++  ...filesIn(join(root, 'mobile', 'shims')).filter((path) => path.endsWith('.js')),
++];
++
++for (const path of jsFiles) {
++  const name = rel(path);
++  const text = readFileSync(path, 'utf8');
++  const lines = text.split(/\r?\n/);
++
++  lines.forEach((line, index) => {
++    const trimmed = line.trim();
++    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
++
++    if (/AbortSignal\.timeout/.test(line)) {
++      const guarded = nearby(lines, index, [/typeof AbortSignal/, /AbortSignal\.timeout\s*(\?|&&|===)/]);
++      if (!guarded) fail(`${name}:${index + 1}: AbortSignal.timeout is not feature-checked (Safari 16.4+)`);
++    }
++    if (/AbortSignal\.any/.test(line)) {
++      const guarded = nearby(lines, index, [/typeof AbortSignal\.any/, /AbortSignal\.any\s*(\?|&&)/]);
++      if (!guarded) fail(`${name}:${index + 1}: AbortSignal.any is not feature-checked (Safari 17.4+)`);
++    }
++    if (/navigator\.mediaSession\.setPositionState/.test(line)) {
++      // app.js returns early from updateMediaPositionState() when the method is missing.
++      const guarded = /setPositionState\s*!==\s*'function'|typeof .*setPositionState/.test(text);
++      if (!guarded) fail(`${name}:${index + 1}: setPositionState is not feature-checked (Safari 15.4+)`);
++    }
++    if (/requestIdleCallback/.test(line)) {
++      const guarded = nearby(lines, index, [/requestIdleCallback\s*\|\|/, /typeof requestIdleCallback/]);
++      if (!guarded) fail(`${name}:${index + 1}: requestIdleCallback has no setTimeout fallback`);
++    }
++    if (/structuredClone\s*\(/.test(line) && !/typeof structuredClone/.test(text)) {
++      warn(`${name}:${index + 1}: structuredClone needs a guard or polyfill on iOS 15.0-15.3`);
++    }
++    if (/Object\.hasOwn\s*\(/.test(line) && !/Object\.hasOwn\s*\?/.test(text)) {
++      warn(`${name}:${index + 1}: Object.hasOwn needs a guard on iOS 15.0-15.3`);
++    }
++    if (/\.(toSorted|toReversed)\s*\(/.test(line)) {
++      warn(`${name}:${index + 1}: ${line.includes('toSorted') ? 'toSorted' : 'toReversed'} needs a guard on iOS 15`);
++    }
++  });
++
++  if (/CompressionStream|DecompressionStream/.test(text) && !/typeof (CompressionStream|DecompressionStream)|canZip/.test(text)) {
++    warn(`${name}: CompressionStream/DecompressionStream need a feature check on iOS 15`);
++  }
++}
++
++// ---------------------------------------------------------------------------
++// CSS features newer than iOS 15.0
++// ---------------------------------------------------------------------------
++
++for (const cssPath of ['styles.css', 'mobile/mobile.css']) {
++  if (!has(cssPath)) continue;
++  const css = read(cssPath);
++  const hasHas = css.includes(':has(');
++  const hasProperty = css.includes('@property');
++  const hasColorMix = css.includes('color-mix(');
++  const hasDynamicViewport = /\b(?:dvh|svh|lvh)\b/.test(css);
++  const hasContainer = css.includes('@container');
++  const hasModernColor = /\b(?:oklch|light-dark)\(/.test(css);
++
++  if (hasHas) warn(`${cssPath}: uses :has() (Safari 15.4+); iOS 15.0-15.3 drops those rules`);
++  if (hasProperty) warn(`${cssPath}: uses @property (Safari 16.4+); iOS 15 ignores it`);
++  if (hasDynamicViewport) warn(`${cssPath}: uses dvh/svh/lvh (Safari 15.4+); provide a vh fallback`);
++  if (hasContainer) warn(`${cssPath}: uses @container (Safari 16+); provide a width-based fallback`);
++  if (hasModernColor) warn(`${cssPath}: uses oklch()/light-dark() (Safari 15.4+/17.5+); provide a fallback`);
++  if (hasColorMix && !css.includes('@supports not (color: color-mix')) {
++    fail(`${cssPath}: uses color-mix() (Safari 16.2+) without an @supports fallback`);
++  }
++}
++
++// ---------------------------------------------------------------------------
++// Swift availability guards (app target only; the widget target is 16.2)
++// ---------------------------------------------------------------------------
++
++const swiftFiles = filesIn(join(root, 'ios', 'App', 'App')).filter((path) => path.endsWith('.swift'));
++for (const path of swiftFiles) {
++  const name = rel(path);
++  const text = readFileSync(path, 'utf8');
++  if (!/ActivityKit|ActivityContent|ActivityAuthorizationInfo|LiveActivityIntent|ActivityAttributes|Activity</.test(text)) continue;
++  const hasGuard = /#if canImport\((ActivityKit|AppIntents)\)/.test(text) || /@available\(iOS 1[67]/.test(text);
++  if (!hasGuard) {
++    fail(`${name}: ActivityKit/AppIntents code is not behind #if canImport or @available`);
++  }
++}
++
++// ---------------------------------------------------------------------------
++// Local policy and CI
++// ---------------------------------------------------------------------------
++
++try {
++  const pkg = JSON.parse(read('package.json'));
++  if (!pkg.allowScripts) warn('package.json: the local allowScripts policy is missing');
++  if (!pkg.scripts?.['check:ios15']) warn('package.json: the check:ios15 script is missing');
++} catch (error) {
++  fail(`package.json: ${error.message}`);
++}
++
++const workflowPath = '.github/workflows/build-ios15-ipa.yml';
++if (!has(workflowPath)) {
++  fail(`${workflowPath} is missing`);
++} else {
++  const workflow = read(workflowPath);
++  if (!workflow.includes('check-ios15-compat')) {
++    warn(`${workflowPath}: the build does not run tools/check-ios15-compat.mjs`);
++  }
++  if (!workflow.includes('MinimumOSVersion')) {
++    fail(`${workflowPath}: the built app minimum is not verified`);
++  }
++}
++
++// ---------------------------------------------------------------------------
++
++if (warnings.length) {
++  console.warn(`\niOS 15 compatibility warnings (${warnings.length}):`);
++  for (const message of warnings) console.warn(`  ! ${message}`);
++}
++if (failures.length) {
++  console.error(`\niOS 15 compatibility failures (${failures.length}):`);
++  for (const message of failures) console.error(`  x ${message}`);
++  process.exit(1);
++}
++console.log('\niOS 15 compatibility check passed.');

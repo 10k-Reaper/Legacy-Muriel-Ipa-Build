@@ -77,9 +77,15 @@ and Node test suite run on Windows/Linux.
 
 ```bash
 git fetch upstream --tags
+
+# the patch series lives on the iOS 15 branch, so copy it out before switching
+git archive HEAD patches/ios15 | tar -x -C "$TEMP"
+
 git switch -c sync/upstream-<commit> upstream/main
-git apply --3way patches/ios15/0001-pin-ios15-deployment-target.patch
-# ... apply the remaining patches in order
+for patch in "$TEMP"/patches/ios15/000*.patch; do
+  git apply --3way "$patch"
+done
+
 npm ci
 npm run check:ios15
 node mobile/build.mjs
