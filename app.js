@@ -10771,14 +10771,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
   }
 
-  function setVolumeFromSlider(slider) {
-    const value = Number(slider && slider.value);
-    if (!Number.isFinite(value)) return;
-    state.volume = Math.max(0, Math.min(1, value));
-    state.isMuted = false;
+  function applyVolumeValue(value, { silent = false, keepMute = false } = {}) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) return;
+    state.volume = Math.max(0, Math.min(1, next));
+    if (!keepMute) state.isMuted = false;
     syncVolumeControls();
     persistVolumeState();
     applyAudioSettings();
+    // iOS ignores <audio>.volume (the hardware buttons own it), so the header/karaoke bars move the
+    // system volume through MurielVolume (mobile/mobile-ui.js + MurielVolumePlugin in AppDelegate.swift).
+    // `silent` marks a value that came from iOS itself, which must not be written back.
+    if (!silent && window.MurielSystemVolume) window.MurielSystemVolume.set(state.volume);
+  }
+
+  function setVolumeFromSlider(slider) {
+    applyVolumeValue(slider && slider.value);
   }
 
   syncVolumeControls();
@@ -12317,6 +12325,56 @@ document.addEventListener('DOMContentLoaded', async () => {
     Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
     input.addEventListener('input', onChange);
   }
+  // On iOS a range input only starts dragging when the finger lands on the knob; touching the track just
+  // jumps there. Move the value ourselves for touches anywhere on the bar, so the whole bar drags.
+  function enableRangeDragAnywhere(input) {
+    let dragId = null;
+    const isMouse = (e) => e.pointerType === 'mouse';
+    const valueFromX = (clientX) => {
+      const rect = input.getBoundingClientRect();
+      if (!rect.width) return null;
+      const min = input.min === '' ? 0 : parseFloat(input.min);
+      const max = input.max === '' ? 100 : parseFloat(input.max);
+      if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+      let value = min + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (max - min);
+      const step = parseFloat(input.step);
+      if (Number.isFinite(step) && step > 0) {
+        value = min + Math.round((value - min) / step) * step;
+        const decimals = (String(input.step).split('.')[1] || '').length;
+        value = Number(value.toFixed(Math.min(decimals, 10)));
+      }
+      return Math.max(min, Math.min(max, value));
+    };
+    const apply = (clientX) => {
+      const value = valueFromX(clientX);
+      if (value === null || Number(input.value) === value) return;
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const end = (e) => {
+      if (dragId !== e.pointerId) return;
+      dragId = null;
+      try { input.releasePointerCapture(e.pointerId); } catch (err) {}
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      if (input.classList.contains('volume-range') && window.MurielSystemVolume && window.MurielSystemVolume.end) window.MurielSystemVolume.end();
+    };
+    input.addEventListener('pointerdown', (e) => {
+      // the mouse already drags natively from anywhere; leave it (and keyboard/assistive input) alone
+      if (isMouse(e) || (e.pointerType && e.pointerType !== 'touch' && e.pointerType !== 'pen')) return;
+      dragId = e.pointerId;
+      try { input.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+      if (input.classList.contains('volume-range') && window.MurielSystemVolume && window.MurielSystemVolume.begin) window.MurielSystemVolume.begin();
+      apply(e.clientX);
+    });
+    input.addEventListener('pointermove', (e) => {
+      if (dragId !== e.pointerId) return;
+      e.preventDefault();
+      apply(e.clientX);
+    });
+    input.addEventListener('pointerup', end);
+    input.addEventListener('pointercancel', end);
+  }
   function enhanceSliders(root) {
     (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
       if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
@@ -12332,6 +12390,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
       };
       watchSliderValue(input, sync);
+      enableRangeDragAnywhere(input);
       sync();
     });
   }
@@ -20613,6 +20672,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     next: () => playNext(),
     prev: () => playPrev(),
     seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
+    // iOS reports its own volume changes (hardware buttons) and the first value on launch; neither may be
+    // written back to the system, and the launch value must not undo the in-app mute.
+    setVolume: (value, opts) => applyVolumeValue(value, { silent: true, keepMute: !!(opts && opts.keepMute) }),
     toggleShuffle: () => { if (el.btnShuffle) el.btnShuffle.click(); return state.isShuffle; },
     toggleRepeat: () => { if (el.btnRepeat) el.btnRepeat.click(); return state.repeatMode; },
     isFavorite: (t) => state.favorites.some((f) => isSameSong(f, t)),

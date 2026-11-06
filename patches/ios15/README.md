@@ -22,6 +22,10 @@ Apply with `git apply --3way` from the repository root, in this order:
 7. `0007-document-ios15-port.patch` — add `LEGACY_IOS.md`.
 8. `0008-pin-patch-line-endings.patch` — add `.gitattributes` so the series
    stays LF-only on Windows.
+9. `0009-fix-karaoke-notch-volume-and-slider-drag.patch` — keep the fullscreen
+   karaoke page clear of the notch, put its seek bar at the bottom, make the
+   volume bars drive the iOS system volume (`MurielVolumePlugin`), and let every
+   range slider be dragged from anywhere on the bar.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:
@@ -54,5 +58,7 @@ repository.
   usually resolves that; re-run `npm run check:ios15` afterwards.
 - Patch 5 is the source of truth for the compatibility rules. Extend it when a
   new iOS 16+ API or Safari 15.4+ CSS feature enters the upstream code.
+- Patch 9 adds a native plugin, so `npx cap sync ios` must run after the patches
+  are applied and before the Xcode build.
 - Do not merge the sync branch into `main` until the macOS GitHub Actions build
   and an iOS 15 device smoke test pass.

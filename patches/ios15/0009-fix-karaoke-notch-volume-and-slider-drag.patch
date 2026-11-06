@@ -1,0 +1,315 @@
+diff --git a/app.js b/app.js
+index 69d5c18..ad34c08 100644
+--- a/app.js
++++ b/app.js
+@@ -10771,14 +10771,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+     if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
+   }
+ 
+-  function setVolumeFromSlider(slider) {
+-    const value = Number(slider && slider.value);
+-    if (!Number.isFinite(value)) return;
+-    state.volume = Math.max(0, Math.min(1, value));
+-    state.isMuted = false;
++  function applyVolumeValue(value, { silent = false, keepMute = false } = {}) {
++    const next = Number(value);
++    if (!Number.isFinite(next)) return;
++    state.volume = Math.max(0, Math.min(1, next));
++    if (!keepMute) state.isMuted = false;
+     syncVolumeControls();
+     persistVolumeState();
+     applyAudioSettings();
++    // iOS ignores <audio>.volume (the hardware buttons own it), so the header/karaoke bars move the
++    // system volume through MurielVolume (mobile/mobile-ui.js + MurielVolumePlugin in AppDelegate.swift).
++    // `silent` marks a value that came from iOS itself, which must not be written back.
++    if (!silent && window.MurielSystemVolume) window.MurielSystemVolume.set(state.volume);
++  }
++
++  function setVolumeFromSlider(slider) {
++    applyVolumeValue(slider && slider.value);
+   }
+ 
+   syncVolumeControls();
+@@ -12317,6 +12325,56 @@ document.addEventListener('DOMContentLoaded', async () => {
+     Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
+     input.addEventListener('input', onChange);
+   }
++  // On iOS a range input only starts dragging when the finger lands on the knob; touching the track just
++  // jumps there. Move the value ourselves for touches anywhere on the bar, so the whole bar drags.
++  function enableRangeDragAnywhere(input) {
++    let dragId = null;
++    const isMouse = (e) => e.pointerType === 'mouse';
++    const valueFromX = (clientX) => {
++      const rect = input.getBoundingClientRect();
++      if (!rect.width) return null;
++      const min = input.min === '' ? 0 : parseFloat(input.min);
++      const max = input.max === '' ? 100 : parseFloat(input.max);
++      if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
++      let value = min + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (max - min);
++      const step = parseFloat(input.step);
++      if (Number.isFinite(step) && step > 0) {
++        value = min + Math.round((value - min) / step) * step;
++        const decimals = (String(input.step).split('.')[1] || '').length;
++        value = Number(value.toFixed(Math.min(decimals, 10)));
++      }
++      return Math.max(min, Math.min(max, value));
++    };
++    const apply = (clientX) => {
++      const value = valueFromX(clientX);
++      if (value === null || Number(input.value) === value) return;
++      input.value = String(value);
++      input.dispatchEvent(new Event('input', { bubbles: true }));
++    };
++    const end = (e) => {
++      if (dragId !== e.pointerId) return;
++      dragId = null;
++      try { input.releasePointerCapture(e.pointerId); } catch (err) {}
++      input.dispatchEvent(new Event('change', { bubbles: true }));
++      if (input.classList.contains('volume-range') && window.MurielSystemVolume && window.MurielSystemVolume.end) window.MurielSystemVolume.end();
++    };
++    input.addEventListener('pointerdown', (e) => {
++      // the mouse already drags natively from anywhere; leave it (and keyboard/assistive input) alone
++      if (isMouse(e) || (e.pointerType && e.pointerType !== 'touch' && e.pointerType !== 'pen')) return;
++      dragId = e.pointerId;
++      try { input.setPointerCapture(e.pointerId); } catch (err) {}
++      e.preventDefault();
++      if (input.classList.contains('volume-range') && window.MurielSystemVolume && window.MurielSystemVolume.begin) window.MurielSystemVolume.begin();
++      apply(e.clientX);
++    });
++    input.addEventListener('pointermove', (e) => {
++      if (dragId !== e.pointerId) return;
++      e.preventDefault();
++      apply(e.clientX);
++    });
++    input.addEventListener('pointerup', end);
++    input.addEventListener('pointercancel', end);
++  }
+   function enhanceSliders(root) {
+     (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
+       if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
+@@ -12332,6 +12390,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+         wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
+       };
+       watchSliderValue(input, sync);
++      enableRangeDragAnywhere(input);
+       sync();
+     });
+   }
+@@ -20613,6 +20672,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+     next: () => playNext(),
+     prev: () => playPrev(),
+     seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
++    // iOS reports its own volume changes (hardware buttons) and the first value on launch; neither may be
++    // written back to the system, and the launch value must not undo the in-app mute.
++    setVolume: (value, opts) => applyVolumeValue(value, { silent: true, keepMute: !!(opts && opts.keepMute) }),
+     toggleShuffle: () => { if (el.btnShuffle) el.btnShuffle.click(); return state.isShuffle; },
+     toggleRepeat: () => { if (el.btnRepeat) el.btnRepeat.click(); return state.repeatMode; },
+     isFavorite: (t) => state.favorites.some((f) => isSameSong(f, t)),
+diff --git a/ios/App/App/AppDelegate.swift b/ios/App/App/AppDelegate.swift
+index f26c366..00157d5 100644
+--- a/ios/App/App/AppDelegate.swift
++++ b/ios/App/App/AppDelegate.swift
+@@ -1,5 +1,6 @@
+ import UIKit
+ import AVFoundation
++import MediaPlayer
+ import WebKit
+ import Capacitor
+ 
+@@ -70,6 +71,7 @@ class MurielBridgeViewController: CAPBridgeViewController {
+     override open func capacitorDidLoad() {
+         bridge?.registerPluginInstance(MurielLiveActivityPlugin())
+         bridge?.registerPluginInstance(MurielAudioSessionPlugin())
++        bridge?.registerPluginInstance(MurielVolumePlugin())
+     }
+ }
+ 
+@@ -123,3 +125,81 @@ public class MurielAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
+         awake = .invalid
+     }
+ }
++
++// The volume bars on a phone (mobile/mobile-ui.js): iOS ignores an <audio> element's volume, so a bar moves
++// the system volume with an off-screen MPVolumeView. Changes made with the hardware buttons (or Control
++// Center) are observed on the audio session and sent back, keeping the page's bars in step.
++@objc(MurielVolumePlugin)
++public class MurielVolumePlugin: CAPPlugin, CAPBridgedPlugin {
++    public let identifier = "MurielVolumePlugin"
++    public let jsName = "MurielVolume"
++    public let pluginMethods: [CAPPluginMethod] = [
++        CAPPluginMethod(name: "getVolume", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
++    ]
++
++    private let volumeView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 10, height: 10))
++    private var volumeObservation: NSKeyValueObservation?
++
++    override public func load() {
++        DispatchQueue.main.async { [weak self] in self?.installVolumeView() }
++        // KVO on outputVolume is public API (the AVSystemController notification is not) and works on iOS 15
++        volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
++            guard let self = self, let volume = change.newValue else { return }
++            DispatchQueue.main.async {
++                self.notifyListeners("volumeChange", data: ["volume": Double(volume)])
++            }
++        }
++    }
++
++    @objc func getVolume(_ call: CAPPluginCall) {
++        call.resolve(["volume": Double(AVAudioSession.sharedInstance().outputVolume)])
++    }
++
++    @objc func setVolume(_ call: CAPPluginCall) {
++        guard let raw = call.getDouble("volume") else {
++            call.reject("volume is required")
++            return
++        }
++        let volume = Float(max(0, min(1, raw)))
++        DispatchQueue.main.async { [weak self] in
++            guard let self = self else {
++                call.reject("system volume control unavailable")
++                return
++            }
++            if self.apply(volume) {
++                call.resolve(["volume": Double(volume)])
++                return
++            }
++            // the MPVolumeView's slider appears a moment after the view is added to a window
++            self.installVolumeView()
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
++                if self.apply(volume) {
++                    call.resolve(["volume": Double(volume)])
++                } else {
++                    call.reject("system volume control unavailable")
++                }
++            }
++        }
++    }
++
++    private func installVolumeView() {
++        guard volumeView.superview == nil else { return }
++        volumeView.showsRouteButton = false
++        // not hidden: a hidden MPVolumeView may not install its slider, and 0.01 is invisible anyway
++        volumeView.alpha = 0.01
++        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
++        let windows = scenes.flatMap { $0.windows }
++        let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first
++        window?.addSubview(volumeView)
++    }
++
++    @discardableResult
++    private func apply(_ volume: Float) -> Bool {
++        installVolumeView()
++        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return false }
++        slider.value = volume
++        slider.sendActions(for: .valueChanged)
++        return true
++    }
++}
+diff --git a/mobile/mobile-ui.js b/mobile/mobile-ui.js
+index 1e81309..13cf5ba 100644
+--- a/mobile/mobile-ui.js
++++ b/mobile/mobile-ui.js
+@@ -18,6 +18,47 @@
+   };
+ })();
+ 
++// iPhone: an <audio> element's volume is read-only (the hardware buttons own it), so the volume bars in the
++// player and in fullscreen karaoke move the system volume through MurielVolume (MPVolumeView;
++// MurielVolumePlugin in ios/App/App/AppDelegate.swift). Changes made with the hardware buttons come back
++// as 'volumeChange' and move Muriel's bars with them.
++(() => {
++  const Cap = window.Capacitor;
++  if (!Cap || Cap.getPlatform() !== 'ios' || typeof Cap.registerPlugin !== 'function') return;
++  const plugin = Cap.registerPlugin('MurielVolume');
++  let lastSet = -1;
++  let lastSetAt = 0;
++  let dragging = false;
++  window.MurielSystemVolume = {
++    begin() { dragging = true; },
++    end() { dragging = false; },
++    set(value) {
++      const v = Math.max(0, Math.min(1, Number(value)));
++      if (!Number.isFinite(v)) return;
++      lastSet = v;
++      lastSetAt = Date.now();
++      const at = lastSetAt;
++      // only ignore the echo of our own write, not a later hardware change to the same level
++      setTimeout(() => { if (lastSetAt === at) lastSet = -1; }, 800);
++      Promise.resolve(plugin.setVolume({ volume: v })).catch(() => {});
++    },
++  };
++  const adopt = (value, initial) => {
++    const v = Number(value);
++    if (!Number.isFinite(v) || dragging) return;
++    if (lastSet >= 0 && Math.abs(v - lastSet) < 0.02) return;
++    // an inactive audio session can report 0 at launch; don't lose the saved level to that
++    if (initial && v === 0 && window.MurielCore && Number(window.MurielCore.state.volume) > 0) return;
++    if (window.MurielCore && window.MurielCore.setVolume) window.MurielCore.setVolume(v, { keepMute: !!initial });
++  };
++  Promise.resolve(plugin.addListener('volumeChange', (data) => adopt(data && data.volume, false))).catch(() => {});
++  const start = () => {
++    lastSet = -1;
++    Promise.resolve(plugin.getVolume()).then((r) => adopt(r && r.volume, true)).catch(() => {});
++  };
++  if (window.MurielCore) start(); else window.addEventListener('muriel:ready', start, { once: true });
++})();
++
+ (() => {
+   const panel = document.getElementById('right-panel');
+   const playbar = document.getElementById('playbar');
+diff --git a/mobile/mobile.css b/mobile/mobile.css
+index 55aebca..ba0a920 100644
+--- a/mobile/mobile.css
++++ b/mobile/mobile.css
+@@ -592,7 +592,36 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
+ html.is-mobile .tvk-row:has(#btn-tvk-viz-connected) { display: none !important; }
+ html.is-mobile .tvk-liquid-layer { animation: none !important; }
+ html.is-mobile .nav-home-app-icon { width: 28px; height: 28px; border-radius: 8px; }
+-html.is-mobile .tvk-progress-row { width: min(86vw, 360px); }
++/* notched phones: the karaoke page is full-screen, so keep the cover/controls below the status bar
++   and put the seek bar at the bottom, out of the way of the artwork */
++html.is-mobile .tv-karaoke-layout {
++  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 8px);
++}
++html.is-mobile .tv-karaoke.tv-nolyrics .tv-karaoke-layout {
++  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 8px) !important;
++}
++html.is-mobile .tv-karaoke-close {
++  top: calc(var(--safe-top) + 10px);
++  right: 16px;
++}
++html.is-mobile .tvk-panel {
++  top: calc(var(--safe-top) + 16px);
++  right: 16px;
++}
++html.is-mobile .tvk-progress-row {
++  position: absolute;
++  left: 50%;
++  bottom: calc(var(--safe-bottom) + 10px);
++  transform: translateX(-50%);
++  width: min(86vw, 360px);
++  margin-top: 0;
++  z-index: 8;
++}
++html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
++html.is-mobile .tvk-seek-slider,
++html.is-mobile #tvk-seek-slider {
++  touch-action: none;
++}
+ html.is-mobile .cc-handle { width: 24px; }
+ html.is-mobile .cc-handle-left { left: -12px; }
+ html.is-mobile .cc-handle-right { right: -12px; }
+diff --git a/styles.css b/styles.css
+index 7f97d28..9f6747b 100644
+--- a/styles.css
++++ b/styles.css
+@@ -6770,7 +6770,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
+ .sl-active, .sl-inactive { position: absolute; top: 6px; height: 16px; pointer-events: none; transition: background-color 0.2s ease; }
+ .sl-active { left: 0; width: max(0px, calc((100% - 6px) * var(--v) + 3px - 8px)); background: var(--md-sys-color-primary); border-radius: 8px 3px 3px 8px; }
+ .sl-inactive { right: 0; width: max(0px, calc(100% - ((100% - 6px) * var(--v) + 3px) - 8px)); background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, transparent); border-radius: 3px 8px 8px 3px; }
+-.sl input[type="range"] { position: absolute; inset: 0; width: 100%; height: 28px; margin: 0; padding: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; z-index: 2; }
++.sl input[type="range"] { position: absolute; inset: 0; width: 100%; height: 28px; margin: 0; padding: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; z-index: 2; touch-action: none; }
+ .sl input[type="range"]::-webkit-slider-runnable-track { height: 28px; background: transparent; }
+ .sl input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 6px; height: 28px; border-radius: 3px; background: var(--md-sys-color-primary); border: none; box-shadow: none; transform: none; transition: width 0.15s ease; }
+ .sl input[type="range"]:active::-webkit-slider-thumb { width: 4px; transform: none; }

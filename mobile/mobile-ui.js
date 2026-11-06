@@ -18,6 +18,47 @@
   };
 })();
 
+// iPhone: an <audio> element's volume is read-only (the hardware buttons own it), so the volume bars in the
+// player and in fullscreen karaoke move the system volume through MurielVolume (MPVolumeView;
+// MurielVolumePlugin in ios/App/App/AppDelegate.swift). Changes made with the hardware buttons come back
+// as 'volumeChange' and move Muriel's bars with them.
+(() => {
+  const Cap = window.Capacitor;
+  if (!Cap || Cap.getPlatform() !== 'ios' || typeof Cap.registerPlugin !== 'function') return;
+  const plugin = Cap.registerPlugin('MurielVolume');
+  let lastSet = -1;
+  let lastSetAt = 0;
+  let dragging = false;
+  window.MurielSystemVolume = {
+    begin() { dragging = true; },
+    end() { dragging = false; },
+    set(value) {
+      const v = Math.max(0, Math.min(1, Number(value)));
+      if (!Number.isFinite(v)) return;
+      lastSet = v;
+      lastSetAt = Date.now();
+      const at = lastSetAt;
+      // only ignore the echo of our own write, not a later hardware change to the same level
+      setTimeout(() => { if (lastSetAt === at) lastSet = -1; }, 800);
+      Promise.resolve(plugin.setVolume({ volume: v })).catch(() => {});
+    },
+  };
+  const adopt = (value, initial) => {
+    const v = Number(value);
+    if (!Number.isFinite(v) || dragging) return;
+    if (lastSet >= 0 && Math.abs(v - lastSet) < 0.02) return;
+    // an inactive audio session can report 0 at launch; don't lose the saved level to that
+    if (initial && v === 0 && window.MurielCore && Number(window.MurielCore.state.volume) > 0) return;
+    if (window.MurielCore && window.MurielCore.setVolume) window.MurielCore.setVolume(v, { keepMute: !!initial });
+  };
+  Promise.resolve(plugin.addListener('volumeChange', (data) => adopt(data && data.volume, false))).catch(() => {});
+  const start = () => {
+    lastSet = -1;
+    Promise.resolve(plugin.getVolume()).then((r) => adopt(r && r.volume, true)).catch(() => {});
+  };
+  if (window.MurielCore) start(); else window.addEventListener('muriel:ready', start, { once: true });
+})();
+
 (() => {
   const panel = document.getElementById('right-panel');
   const playbar = document.getElementById('playbar');

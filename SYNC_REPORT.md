@@ -74,7 +74,7 @@ may look different. This is visual degradation, not a crash path.
 
 ## Downstream changes
 
-Eight patches were generated from `2df82f5` to the sync branch and committed
+Nine patches were generated from `2df82f5` to the sync branch and committed
 under `patches/ios15/`:
 
 1. `0001-pin-ios15-deployment-target.patch`
@@ -85,6 +85,7 @@ under `patches/ios15/`:
 6. `0006-gate-ios-workflows.patch`
 7. `0007-document-ios15-port.patch`
 8. `0008-pin-patch-line-endings.patch`
+9. `0009-fix-karaoke-notch-volume-and-slider-drag.patch` (post-device-test)
 
 `tools/check-ios15-compat.mjs` is a cross-platform gate that verifies the Xcode
 deployment targets, SPM platform, Safari target, mobile script copy list,
@@ -98,7 +99,7 @@ workflows' binary minimum checks. It runs before and after `npx cap sync ios`.
 - `npm run check:ios15` — pass with 4 expected warnings.
 - `node mobile/build.mjs` — `www/` built, including `download-batch.js`,
   `now-playing.js` and `track-match.js`.
-- Patch series — all eight patches apply cleanly to a fresh `2df82f5` worktree;
+- Patch series — all nine patches apply cleanly to a fresh `2df82f5` worktree;
   every source, workflow and documentation file then matches the sync branch
   (the patch files and this report are intentionally outside the series).
 
@@ -117,24 +118,41 @@ classified as environment/network issues, not sync regressions:
 
 These should be confirmed once on macOS or Linux CI before merging to `main`.
 
-### Not yet verified
+### macOS build and device test
 
-This environment has no Xcode or Apple iOS SDK. The following remain open:
-
-- `npx cap sync ios` against the updated `www/`.
-- `xcodebuild` compilation for the iOS 15.0 app target and iOS 16.2 widget.
-- Built app/widget `MinimumOSVersion` and `LC_BUILD_VERSION minos` assertions.
-- Device smoke test on iOS 15.0–15.3: background audio, lock-screen controls,
-  interruption resume, downloads, deep links, and settings layouts affected by
-  `:has()`.
+- The GitHub Actions **Build iOS 15 IPA** workflow passed on macOS. The artifact
+  reported app minimum `15.0`, widget minimum `16.2`, and binary `minos 15.0`.
+- The iPhone XR / iOS 15.4.1 smoke test passed: playback, lock-screen controls,
+  interruption resume, downloads, deep links, and the settings UI.
+- The fullscreen karaoke fixes in patch 9 (notch spacing, bottom seek bar, iOS
+  system volume, drag-anywhere bars) were made after that test, so they still
+  need a fresh CI build and an iPhone check.
 
 ## Gate for merging
 
 Merge `sync/upstream-2df82f5` into `main` only after:
 
-1. The GitHub Actions **Build iOS 15 IPA** workflow succeeds on macOS.
-2. The artifact reports app minimum `15.0`, widget minimum `16.2`, and binary
-   `minos 15.0`.
-3. An iOS 15 device smoke test passes.
-4. `npm test` is re-run on a non-Windows environment (or the five failures are
+1. ~~The GitHub Actions **Build iOS 15 IPA** workflow succeeds on macOS.~~ Passed.
+2. ~~The artifact reports app minimum `15.0`, widget minimum `16.2`, and binary
+   `minos 15.0`.~~ Passed.
+3. ~~An iOS 15 device smoke test passes.~~ Passed on iPhone XR / iOS 15.4.1.
+4. The karaoke follow-up build (patch 9) succeeds on macOS and the three fixes
+   pass on the iPhone.
+5. `npm test` is re-run on a non-Windows environment (or the five failures are
    confirmed as pre-existing environment issues).
+
+## Karaoke follow-up (patch 9)
+
+Three issues were reported on the iPhone XR / iOS 15.4.1 after the sync smoke
+test; moving the seek row was part of the layout fix:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The cover art sat under the notch. | `.tv-side` was top-aligned with a fixed `24px` mobile padding; the safe-area inset was not used. | `mobile/mobile.css` now pads the karaoke layout by `--safe-top`, and the close/settings controls use the same inset. |
+| The seek bar took space in the control column. | `.tvk-progress-row` was the last item in `.tv-side`. | On phones it is absolutely positioned at `--safe-bottom`; the freed space lets the cover and controls sit lower. |
+| The karaoke volume bar did not change the music. | iOS ignores `HTMLMediaElement.volume`; `mobile-ui.js` only muted. | `MurielVolumePlugin` (`MPVolumeView` + `AVAudioSession.outputVolume` KVO) moves the system volume and reports hardware-button changes back to the page. |
+| Sliders only dragged by the knob. | iOS starts a range drag only on the thumb. | `enableRangeDragAnywhere()` maps touches anywhere on the enhanced range inputs to values and dispatches `input`/`change`; `touch-action: none` keeps the gesture on the bar. EQ and theme-hue sliders stay excluded. |
+
+The native plugin is registered in `capacitorDidLoad`, so `npx cap sync ios` must
+run before the Xcode build. All four changes are covered by
+`0009-fix-karaoke-notch-volume-and-slider-drag.patch`.

@@ -592,7 +592,36 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
 html.is-mobile .tvk-row:has(#btn-tvk-viz-connected) { display: none !important; }
 html.is-mobile .tvk-liquid-layer { animation: none !important; }
 html.is-mobile .nav-home-app-icon { width: 28px; height: 28px; border-radius: 8px; }
-html.is-mobile .tvk-progress-row { width: min(86vw, 360px); }
+/* notched phones: the karaoke page is full-screen, so keep the cover/controls below the status bar
+   and put the seek bar at the bottom, out of the way of the artwork */
+html.is-mobile .tv-karaoke-layout {
+  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 8px);
+}
+html.is-mobile .tv-karaoke.tv-nolyrics .tv-karaoke-layout {
+  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 8px) !important;
+}
+html.is-mobile .tv-karaoke-close {
+  top: calc(var(--safe-top) + 10px);
+  right: 16px;
+}
+html.is-mobile .tvk-panel {
+  top: calc(var(--safe-top) + 16px);
+  right: 16px;
+}
+html.is-mobile .tvk-progress-row {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + 10px);
+  transform: translateX(-50%);
+  width: min(86vw, 360px);
+  margin-top: 0;
+  z-index: 8;
+}
+html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
+html.is-mobile .tvk-seek-slider,
+html.is-mobile #tvk-seek-slider {
+  touch-action: none;
+}
 html.is-mobile .cc-handle { width: 24px; }
 html.is-mobile .cc-handle-left { left: -12px; }
 html.is-mobile .cc-handle-right { right: -12px; }
