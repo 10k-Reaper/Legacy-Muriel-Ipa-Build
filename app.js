@@ -23,6 +23,32 @@
   } catch (e) {}
 })();
 
+// CanvasRenderingContext2D.roundRect only reached Safari in 16.4. On iOS 15 every visualizer frame threw
+// "miniCtx.roundRect is not a function" (the bar and karaoke canvases stayed blank), so provide the same
+// path here. Radii are always a number in this app; arrays are handled for safety.
+(() => {
+  try {
+    const proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+    if (!proto || typeof proto.roundRect === 'function') return;
+    proto.roundRect = function (x, y, w, h, radii) {
+      let r = Array.isArray(radii) ? radii[0] : radii;
+      r = typeof r === 'number' && isFinite(r) ? r : 0;
+      const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+      this.moveTo(x + rr, y);
+      this.lineTo(x + w - rr, y);
+      this.quadraticCurveTo(x + w, y, x + w, y + rr);
+      this.lineTo(x + w, y + h - rr);
+      this.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+      this.lineTo(x + rr, y + h);
+      this.quadraticCurveTo(x, y + h, x, y + h - rr);
+      this.lineTo(x, y + rr);
+      this.quadraticCurveTo(x, y, x + rr, y);
+      this.closePath();
+      return this;
+    };
+  } catch (e) {}
+})();
+
 // localStorage (~5 MB) holds favorites, playlists, history, the queue and Encore. When it was full, every
 // setItem threw: a song tap failed before the stream was even requested and new favorites vanished on restart.
 // Free what can be rebuilt (the phone debug log, old Encore days) and retry; if it still doesn't fit, report

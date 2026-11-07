@@ -631,10 +631,20 @@ html.is-mobile .tvk-progress-row {
 html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
 /* the wave sits above the bottom seek row instead of behind it */
 html.is-mobile .tvk-visualizer { bottom: calc(var(--safe-bottom) + 52px); }
+/* with lyrics the desktop layout only shows the wave when "visualizer with lyrics" is enabled; the
+   phone has room above the seek row, so draw it anyway unless the karaoke visualizer was turned off */
+html.is-mobile .tv-karaoke:not(.no-tvk-visualizer) .tvk-visualizer { display: flex; }
 html.is-mobile .tvk-seek-slider,
 html.is-mobile #tvk-seek-slider {
   touch-action: none;
 }
+/* the sheet's lyrics scroll only up and down; a long word used to widen the container and let the
+   whole text block drift sideways under the finger */
+html.is-mobile .lyrics-container,
+html.is-mobile .lyrics-section,
+html.is-mobile #right-panel { overflow-x: hidden !important; }
+html.is-mobile .lyrics-container { touch-action: pan-y !important; }
+html.is-mobile .lyrics-container .lyric-line { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 html.is-mobile .cc-handle { width: 24px; }
 html.is-mobile .cc-handle-left { left: -12px; }
 html.is-mobile .cc-handle-right { right: -12px; }

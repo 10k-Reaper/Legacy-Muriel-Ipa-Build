@@ -185,3 +185,17 @@ cumulative patch 9:
 The native plugin is registered in `capacitorDidLoad`, so `npx cap sync ios` must
 run before the Xcode build. All of these changes are covered by
 `0009-fix-karaoke-notch-volume-and-slider-drag.patch`.
+
+## Fourth iPhone pass (patch 9, cumulative)
+
+The third-pass build confirmed the karaoke seek row and the home-row scrolling.
+It surfaced three more visual issues, all fixed in the same cumulative patch 9:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| No playbar visualizer at all, in either the compact-bars or the wavy/liquid style, in Now Playing or Karaoke. | `CanvasRenderingContext2D.roundRect()` only reached Safari 16.4. On iOS 15.4 the first bar draw threw, which aborted the whole frame before the karaoke and behind-bar canvases were reached, so every frame was blank. Karaoke also left its wave `display: none` whenever lyrics were present. | `app.js` installs a `roundRect` polyfill on `CanvasRenderingContext2D.prototype` before startup. The phone analyser graph now survives iOS refusing the mirror element (stub analyser plus synthetic spectrum), and phones draw the karaoke wave with lyrics unless the karaoke visualizer is switched off. |
+| Lyrics in Now Playing could be panned sideways. | Lyric lines used `overflow: visible`, so a long line could widen the container and turn it into a horizontal scroller. | `overflow-x: hidden` and `touch-action: pan-y` on the phone lyrics container, plus `overflow-wrap: anywhere` on the lines. |
+| "Your genres" wrapped onto several rows. | `.fy-genres` used `flex-wrap: wrap`. | It is now a single-row horizontal scroller with snap points and a hidden scrollbar, like the other "For you" rows. |
+
+The appearance sliders still feel laggy on the device; the user judged that
+non-blocking, so no further change was made.

@@ -1,8 +1,41 @@
 diff --git a/app.js b/app.js
-index 69d5c18..6625407 100644
+index 69d5c18..e614e7d 100644
 --- a/app.js
 +++ b/app.js
-@@ -3782,6 +3782,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -23,6 +23,32 @@
+   } catch (e) {}
+ })();
+ 
++// CanvasRenderingContext2D.roundRect only reached Safari in 16.4. On iOS 15 every visualizer frame threw
++// "miniCtx.roundRect is not a function" (the bar and karaoke canvases stayed blank), so provide the same
++// path here. Radii are always a number in this app; arrays are handled for safety.
++(() => {
++  try {
++    const proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
++    if (!proto || typeof proto.roundRect === 'function') return;
++    proto.roundRect = function (x, y, w, h, radii) {
++      let r = Array.isArray(radii) ? radii[0] : radii;
++      r = typeof r === 'number' && isFinite(r) ? r : 0;
++      const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
++      this.moveTo(x + rr, y);
++      this.lineTo(x + w - rr, y);
++      this.quadraticCurveTo(x + w, y, x + w, y + rr);
++      this.lineTo(x + w, y + h - rr);
++      this.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
++      this.lineTo(x + rr, y + h);
++      this.quadraticCurveTo(x, y + h, x, y + h - rr);
++      this.lineTo(x, y + rr);
++      this.quadraticCurveTo(x, y, x + rr, y);
++      this.closePath();
++      return this;
++    };
++  } catch (e) {}
++})();
++
+ // localStorage (~5 MB) holds favorites, playlists, history, the queue and Encore. When it was full, every
+ // setItem threw: a song tap failed before the stream was even requested and new favorites vanished on restart.
+ // Free what can be rebuilt (the phone debug log, old Encore days) and retry; if it still doesn't fit, report
+@@ -3782,6 +3808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
        el.nativeAudio.pause();
        el.nativeAudio.removeAttribute('src');
        el.nativeAudio.load();
@@ -10,7 +43,7 @@ index 69d5c18..6625407 100644
      } catch (e) {}
  
      if (hlsInstance) {
-@@ -3873,6 +3874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3873,6 +3900,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          if (currentToken !== state.loadToken) return;
          el.nativeAudio.preload = 'auto';
          el.nativeAudio.src = streamUrl;
@@ -18,7 +51,7 @@ index 69d5c18..6625407 100644
          playSmooth();
          applyAudioSettings();
          return;
-@@ -3936,6 +3938,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3936,6 +3964,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.nativeAudio.preload = 'auto';
  
      if (data.isHls && window.Hls && Hls.isSupported()) {
@@ -28,7 +61,7 @@ index 69d5c18..6625407 100644
        hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
        hlsInstance.loadSource(data.streamUrl);
        hlsInstance.attachMedia(el.nativeAudio);
-@@ -3967,6 +3972,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3967,6 +3998,9 @@ document.addEventListener('DOMContentLoaded', async () => {
        // which fetches with yt-dlp's headers; the direct URL stays as a fallback.
        const src = pickStreamSrc(data);
        proxyFallback = src !== data.streamUrl ? null : { token: currentToken, track, url: data.proxyUrl || '' };
@@ -38,7 +71,7 @@ index 69d5c18..6625407 100644
        el.nativeAudio.src = src;
        playSmooth();
      }
-@@ -3993,6 +4001,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3993,6 +4027,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      const me = el.nativeAudio.error;
      if (!me || (me.code !== 4 && me.code !== 2)) return false;
      console.warn('Track playback: direct stream failed, trying the local proxy');
@@ -46,7 +79,7 @@ index 69d5c18..6625407 100644
      el.nativeAudio.src = fb.url;
      playSmooth();
      return true;
-@@ -4908,6 +4917,8 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -4908,6 +4943,8 @@ document.addEventListener('DOMContentLoaded', async () => {
      tvIdleTimer = setTimeout(() => {
        const tvkPanel = document.getElementById('tvk-panel');
        if (tvkPanel && tvkPanel.classList.contains('open')) return;
@@ -55,7 +88,7 @@ index 69d5c18..6625407 100644
        if (state.isTvKaraokeOpen && el.tvKaraoke) {
          el.tvKaraoke.classList.add('tv-idle');
        }
-@@ -5342,7 +5353,11 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -5342,7 +5379,11 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.tvKaraokeClose.addEventListener('click', closeTvKaraoke);
    }
    if (el.tvKaraoke) {
@@ -68,7 +101,7 @@ index 69d5c18..6625407 100644
    }
  
    const btnTvkPrev = document.getElementById('btn-tvk-prev');
-@@ -10771,14 +10786,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -10771,14 +10812,22 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
    }
  
@@ -96,7 +129,7 @@ index 69d5c18..6625407 100644
    }
  
    syncVolumeControls();
-@@ -11373,8 +11396,31 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11373,8 +11422,31 @@ document.addEventListener('DOMContentLoaded', async () => {
      });
    }
  
@@ -128,7 +161,7 @@ index 69d5c18..6625407 100644
        const val = parseInt(e.target.value, 10);
        if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
        document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
-@@ -11463,7 +11509,15 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11463,7 +11535,15 @@ document.addEventListener('DOMContentLoaded', async () => {
    }, 50);
  
    if (el.sliderCornerRadius) {
@@ -144,7 +177,7 @@ index 69d5c18..6625407 100644
        const val = parseInt(e.target.value, 10);
        if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
        document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
-@@ -11473,7 +11527,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11473,7 +11553,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderUiAlpha) {
@@ -159,7 +192,7 @@ index 69d5c18..6625407 100644
        const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
-@@ -11494,7 +11555,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11494,7 +11581,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderTextAlpha) {
@@ -174,7 +207,7 @@ index 69d5c18..6625407 100644
        const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--text-alpha', `${val}%`);
-@@ -11740,7 +11808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11740,7 +11834,7 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
@@ -183,7 +216,7 @@ index 69d5c18..6625407 100644
    function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
    function onBackgroundChanged(kind, enabled) {
      if (!getAdv('ui_alpha_auto', true)) return;
-@@ -11820,11 +11888,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11820,11 +11914,24 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
      document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
  
@@ -209,7 +242,7 @@ index 69d5c18..6625407 100644
      });
    }
  
-@@ -12317,6 +12398,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12317,6 +12424,97 @@ document.addEventListener('DOMContentLoaded', async () => {
      Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
      input.addEventListener('input', onChange);
    }
@@ -307,7 +340,7 @@ index 69d5c18..6625407 100644
    function enhanceSliders(root) {
      (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
        if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
-@@ -12332,6 +12504,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12332,6 +12530,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
        };
        watchSliderValue(input, sync);
@@ -315,7 +348,7 @@ index 69d5c18..6625407 100644
        sync();
      });
    }
-@@ -19784,9 +19957,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19784,9 +19983,13 @@ document.addEventListener('DOMContentLoaded', async () => {
        const a = el.nativeAudio;
        return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
      };
@@ -330,7 +363,7 @@ index 69d5c18..6625407 100644
        const t = (Number(slider.value) / 1000) * durNow();
        const curEl = document.getElementById('tvk-time-current');
        if (curEl) curEl.textContent = formatDuration(t);
-@@ -19799,8 +19976,12 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19799,8 +20002,12 @@ document.addEventListener('DOMContentLoaded', async () => {
          updateMediaPositionState();
        }
        tvkSeekDragging = false;
@@ -344,7 +377,7 @@ index 69d5c18..6625407 100644
      // the slider must not start a lyrics drag or hide the controls
      slider.addEventListener('mousemove', (e) => e.stopPropagation());
    })();
-@@ -20613,6 +20794,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -20613,6 +20820,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      next: () => playNext(),
      prev: () => playPrev(),
      seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
@@ -456,7 +489,7 @@ index f26c366..00157d5 100644
 +    }
 +}
 diff --git a/mobile/mobile-ui.js b/mobile/mobile-ui.js
-index 1e81309..afda5f0 100644
+index 1e81309..87b5636 100644
 --- a/mobile/mobile-ui.js
 +++ b/mobile/mobile-ui.js
 @@ -3,12 +3,15 @@
@@ -478,7 +511,7 @@ index 1e81309..afda5f0 100644
    const Engine = window.MurielAudioEngine;
    if (!Engine) return;
    Engine.prototype.init = function (audioElement) { this.__element = audioElement || this.__element; };
-@@ -18,6 +21,243 @@
+@@ -18,6 +21,261 @@
    };
  })();
  
@@ -530,25 +563,44 @@ index 1e81309..afda5f0 100644
 +// now-playing sheet or the karaoke page is open and the app is in the foreground, and it is never allowed
 +// to make a sound if the graph could not be built.
 +(() => {
++  try {
 +  const Engine = window.MurielAudioEngine;
 +  if (!Engine) return;
 +
 +  let mirror = null;
 +  let ctx = null;
 +  let analyser = null;
-+  let failed = false;
++  let graphFailed = false;
 +  let wanted = false;
 +  let lastPlayAttempt = 0;
 +  let mirrorStartedAt = 0;
 +  let mirrorBlocked = false;
 +  let userPauseAt = 0;
++  // app.js only needs frequencyBinCount from this; when Web Audio cannot start at all the synthetic
++  // spectrum below still has a buffer to fill
++  const stubAnalyser = {
++    frequencyBinCount: 64,
++    getByteFrequencyData(buffer) { if (buffer && buffer.fill) buffer.fill(0); },
++  };
 +
 +  const mainAudio = () => document.getElementById('native-audio') || document.querySelector('audio:not([data-viz-mirror])');
 +
 +  function build() {
-+    if (analyser || failed) return analyser;
++    if (analyser || graphFailed) return analyser;
 +    const AC = window.AudioContext || window.webkitAudioContext;
-+    if (!AC) { failed = true; return null; }
++    if (!AC) { graphFailed = true; return null; }
++    try {
++      ctx = new AC();
++      analyser = ctx.createAnalyser();
++      analyser.fftSize = 128;
++      analyser.smoothingTimeConstant = 0.8;
++    } catch (e) {
++      graphFailed = true;
++      analyser = null;
++      return null;
++    }
++    // The mirror is only an optimisation. If iOS refuses the media-element source, the analyser stays
++    // silent (zeros) and getFrequencyData draws the synthetic wave instead of a flat line.
 +    try {
 +      mirror = document.createElement('audio');
 +      mirror.id = 'muriel-viz-audio';
@@ -559,19 +611,13 @@ index 1e81309..afda5f0 100644
 +      mirror.preload = 'none';
 +      mirror.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
 +      document.body.appendChild(mirror);
-+      ctx = new AC();
 +      const source = ctx.createMediaElementSource(mirror);
-+      analyser = ctx.createAnalyser();
-+      analyser.fftSize = 128;
-+      analyser.smoothingTimeConstant = 0.8;
 +      const silent = ctx.createGain();
 +      silent.gain.value = 0;
 +      source.connect(analyser);
 +      analyser.connect(silent);
 +      silent.connect(ctx.destination);
 +    } catch (e) {
-+      failed = true;
-+      analyser = null;
 +      try { if (mirror && mirror.parentNode) mirror.parentNode.removeChild(mirror); } catch (_) {}
 +      mirror = null;
 +    }
@@ -624,7 +670,7 @@ index 1e81309..afda5f0 100644
 +      if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
 +      return;
 +    }
-+    if (!build()) return;
++    build();
 +    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
 +    sync(true);
 +  }
@@ -695,11 +741,15 @@ index 1e81309..afda5f0 100644
 +  update();
 +
 +  let silentSince = 0;
-+  Engine.prototype.getAnalyserNode = function () { return wanted ? build() : null; };
++  Engine.prototype.getAnalyserNode = function () {
++    if (!wanted) return null;
++    return build() || stubAnalyser;
++  };
 +  Engine.prototype.getFrequencyData = function (buffer) {
-+    const node = wanted ? build() : null;
-+    if (!node || !buffer) return;
-+    node.getByteFrequencyData(buffer);
++    if (!wanted || !buffer) return;
++    const node = build();
++    if (node && typeof node.getByteFrequencyData === 'function') node.getByteFrequencyData(buffer);
++    else buffer.fill(0);
 +    let peak = 0;
 +    for (let i = 0; i < buffer.length; i++) { if (buffer[i] > peak) peak = buffer[i]; }
 +    const a = mainAudio();
@@ -717,13 +767,14 @@ index 1e81309..afda5f0 100644
 +      buffer[i] = Math.max(0, Math.min(255, (0.45 + 0.4 * w) * 210 * env));
 +    }
 +  };
++  } catch (e) {}
 +})();
 +
  (() => {
    const panel = document.getElementById('right-panel');
    const playbar = document.getElementById('playbar');
 diff --git a/mobile/mobile.css b/mobile/mobile.css
-index 55aebca..6b8da8c 100644
+index 55aebca..00be995 100644
 --- a/mobile/mobile.css
 +++ b/mobile/mobile.css
 @@ -199,7 +199,6 @@ html.is-mobile body.np-open .playback-controls { justify-content: space-between
@@ -755,7 +806,7 @@ index 55aebca..6b8da8c 100644
  
  /* Riff 42.3 gave the Now Playing header min-height:0, so in the sheet's column it shrank to a few px and the
     lyrics tools (edit / sync / translate / fullscreen / Word) got clipped under the tabs */
-@@ -592,7 +603,38 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
+@@ -592,7 +603,48 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
  html.is-mobile .tvk-row:has(#btn-tvk-viz-connected) { display: none !important; }
  html.is-mobile .tvk-liquid-layer { animation: none !important; }
  html.is-mobile .nav-home-app-icon { width: 28px; height: 28px; border-radius: 8px; }
@@ -788,15 +839,25 @@ index 55aebca..6b8da8c 100644
 +html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
 +/* the wave sits above the bottom seek row instead of behind it */
 +html.is-mobile .tvk-visualizer { bottom: calc(var(--safe-bottom) + 52px); }
++/* with lyrics the desktop layout only shows the wave when "visualizer with lyrics" is enabled; the
++   phone has room above the seek row, so draw it anyway unless the karaoke visualizer was turned off */
++html.is-mobile .tv-karaoke:not(.no-tvk-visualizer) .tvk-visualizer { display: flex; }
 +html.is-mobile .tvk-seek-slider,
 +html.is-mobile #tvk-seek-slider {
 +  touch-action: none;
 +}
++/* the sheet's lyrics scroll only up and down; a long word used to widen the container and let the
++   whole text block drift sideways under the finger */
++html.is-mobile .lyrics-container,
++html.is-mobile .lyrics-section,
++html.is-mobile #right-panel { overflow-x: hidden !important; }
++html.is-mobile .lyrics-container { touch-action: pan-y !important; }
++html.is-mobile .lyrics-container .lyric-line { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
  html.is-mobile .cc-handle { width: 24px; }
  html.is-mobile .cc-handle-left { left: -12px; }
  html.is-mobile .cc-handle-right { right: -12px; }
 diff --git a/styles.css b/styles.css
-index 7f97d28..2fc6f1a 100644
+index 7f97d28..ba48ddc 100644
 --- a/styles.css
 +++ b/styles.css
 @@ -6770,7 +6770,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
@@ -816,16 +877,20 @@ index 7f97d28..2fc6f1a 100644
    scrollbar-width: none;
    scroll-behavior: smooth;
    overscroll-behavior-x: contain;
-@@ -8380,7 +8381,7 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+@@ -8379,8 +8380,10 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+ 
  /* ---- For you (recommendations) ---- */
  .fy-section { animation: m3FadeUp 350ms cubic-bezier(0.2, 0, 0, 1) both; }
- .fy-genres { flex-wrap: wrap; }
+-.fy-genres { flex-wrap: wrap; }
 -.fy-row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; scroll-snap-type: x proximity; }
++.fy-genres { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-snap-type: x proximity; padding-bottom: 2px; }
++.fy-genres::-webkit-scrollbar { display: none; }
++.fy-genres .chip-btn { flex: 0 0 auto; scroll-snap-align: start; }
 +.fy-row { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scrollbar-width: none; scroll-snap-type: x proximity; }
  .fy-row::-webkit-scrollbar { display: none; }
  .fy-card, .fy-artist {
    flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; text-align: left;
-@@ -8535,6 +8536,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+@@ -8535,6 +8538,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
    .volume-range::-webkit-slider-runnable-track, .wavy-track { background: rgba(255, 255, 255, .3); stroke: rgba(255, 255, 255, .3); }
    .cache-progress-track, .update-progress, .sl-inactive { background: rgba(255, 255, 255, .16); }
    .settings-nav-btn:hover, .sp-modes button:hover:not(.active), .tvk-pill-btn:hover { background: rgba(255, 255, 255, .08); }
@@ -835,7 +900,7 @@ index 7f97d28..2fc6f1a 100644
  }
  
  /* Settings → Sync (sync.js) */
-@@ -8625,7 +8629,7 @@ body.mini .profile-switch { display: none; }
+@@ -8625,7 +8631,7 @@ body.mini .profile-switch { display: none; }
  .sync-invite-text b { font-size: calc(16px * var(--font-scale, 1)); }
  .sync-invite-text span { font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); line-height: 1.45; }
  #section-home-playlists { padding-top: 6px; }
@@ -844,7 +909,7 @@ index 7f97d28..2fc6f1a 100644
  .home-pl-row::-webkit-scrollbar { display: none; }
  .home-pl-card { flex: none; width: 150px; display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
  .home-pl-cover { width: 150px; height: 150px; border-radius: 18px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--md-sys-color-surface-container-high); margin-bottom: 4px; transition: transform .2s cubic-bezier(.2, 0, 0, 1); }
-@@ -8730,7 +8734,7 @@ body:not(.home-spotify) #sp-home { display: none; }
+@@ -8730,7 +8736,7 @@ body:not(.home-spotify) #sp-home { display: none; }
  .sp-tile-title { font-weight: 600; font-size: calc(14px * var(--font-scale, 1)); }
  .sp-tile-sub { font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); }
  .sp-fade { display: block; white-space: nowrap; overflow: hidden; text-overflow: clip; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }

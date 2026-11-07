@@ -69,25 +69,44 @@
 // now-playing sheet or the karaoke page is open and the app is in the foreground, and it is never allowed
 // to make a sound if the graph could not be built.
 (() => {
+  try {
   const Engine = window.MurielAudioEngine;
   if (!Engine) return;
 
   let mirror = null;
   let ctx = null;
   let analyser = null;
-  let failed = false;
+  let graphFailed = false;
   let wanted = false;
   let lastPlayAttempt = 0;
   let mirrorStartedAt = 0;
   let mirrorBlocked = false;
   let userPauseAt = 0;
+  // app.js only needs frequencyBinCount from this; when Web Audio cannot start at all the synthetic
+  // spectrum below still has a buffer to fill
+  const stubAnalyser = {
+    frequencyBinCount: 64,
+    getByteFrequencyData(buffer) { if (buffer && buffer.fill) buffer.fill(0); },
+  };
 
   const mainAudio = () => document.getElementById('native-audio') || document.querySelector('audio:not([data-viz-mirror])');
 
   function build() {
-    if (analyser || failed) return analyser;
+    if (analyser || graphFailed) return analyser;
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) { failed = true; return null; }
+    if (!AC) { graphFailed = true; return null; }
+    try {
+      ctx = new AC();
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 128;
+      analyser.smoothingTimeConstant = 0.8;
+    } catch (e) {
+      graphFailed = true;
+      analyser = null;
+      return null;
+    }
+    // The mirror is only an optimisation. If iOS refuses the media-element source, the analyser stays
+    // silent (zeros) and getFrequencyData draws the synthetic wave instead of a flat line.
     try {
       mirror = document.createElement('audio');
       mirror.id = 'muriel-viz-audio';
@@ -98,19 +117,13 @@
       mirror.preload = 'none';
       mirror.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
       document.body.appendChild(mirror);
-      ctx = new AC();
       const source = ctx.createMediaElementSource(mirror);
-      analyser = ctx.createAnalyser();
-      analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.8;
       const silent = ctx.createGain();
       silent.gain.value = 0;
       source.connect(analyser);
       analyser.connect(silent);
       silent.connect(ctx.destination);
     } catch (e) {
-      failed = true;
-      analyser = null;
       try { if (mirror && mirror.parentNode) mirror.parentNode.removeChild(mirror); } catch (_) {}
       mirror = null;
     }
@@ -163,7 +176,7 @@
       if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
       return;
     }
-    if (!build()) return;
+    build();
     if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
     sync(true);
   }
@@ -234,11 +247,15 @@
   update();
 
   let silentSince = 0;
-  Engine.prototype.getAnalyserNode = function () { return wanted ? build() : null; };
+  Engine.prototype.getAnalyserNode = function () {
+    if (!wanted) return null;
+    return build() || stubAnalyser;
+  };
   Engine.prototype.getFrequencyData = function (buffer) {
-    const node = wanted ? build() : null;
-    if (!node || !buffer) return;
-    node.getByteFrequencyData(buffer);
+    if (!wanted || !buffer) return;
+    const node = build();
+    if (node && typeof node.getByteFrequencyData === 'function') node.getByteFrequencyData(buffer);
+    else buffer.fill(0);
     let peak = 0;
     for (let i = 0; i < buffer.length; i++) { if (buffer[i] > peak) peak = buffer[i]; }
     const a = mainAudio();
@@ -256,6 +273,7 @@
       buffer[i] = Math.max(0, Math.min(255, (0.45 + 0.4 * w) * 210 * env));
     }
   };
+  } catch (e) {}
 })();
 
 (() => {

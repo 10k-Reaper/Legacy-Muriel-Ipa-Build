@@ -8380,7 +8380,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
 
 /* ---- For you (recommendations) ---- */
 .fy-section { animation: m3FadeUp 350ms cubic-bezier(0.2, 0, 0, 1) both; }
-.fy-genres { flex-wrap: wrap; }
+.fy-genres { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-snap-type: x proximity; padding-bottom: 2px; }
+.fy-genres::-webkit-scrollbar { display: none; }
+.fy-genres .chip-btn { flex: 0 0 auto; scroll-snap-align: start; }
 .fy-row { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scrollbar-width: none; scroll-snap-type: x proximity; }
 .fy-row::-webkit-scrollbar { display: none; }
 .fy-card, .fy-artist {

@@ -30,7 +30,11 @@ Apply with `git apply --3way` from the repository root, in this order:
    while it is being held, give the phone a real analyser through a silent
    mirror element (with a synthetic wave if iOS refuses it), stop home-page
    rows from scrolling vertically (PR #44's CSS), and apply the laggy
-   appearance sliders once per frame (storage on release).
+   appearance sliders once per frame (storage on release). The fourth device
+   pass adds a `CanvasRenderingContext2D.roundRect()` polyfill (Safari 16.4+)
+   so the visualizer actually draws on iOS 15, draws the karaoke wave with
+   lyrics on phones, keeps Now Playing lyrics from panning sideways, and makes
+   "Your genres" a horizontal row.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:
