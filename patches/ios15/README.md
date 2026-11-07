@@ -32,9 +32,12 @@ Apply with `git apply --3way` from the repository root, in this order:
    rows from scrolling vertically (PR #44's CSS), and apply the laggy
    appearance sliders once per frame (storage on release). The fourth device
    pass adds a `CanvasRenderingContext2D.roundRect()` polyfill (Safari 16.4+)
-   so the visualizer actually draws on iOS 15, draws the karaoke wave with
-   lyrics on phones, keeps Now Playing lyrics from panning sideways, and makes
-   "Your genres" a horizontal row.
+   so the visualizer actually draws on iOS 15, keeps Now Playing lyrics from
+   panning sideways, and makes "Your genres" a horizontal row. The fifth device
+   pass restores the karaoke visualizer settings (no forced wave), makes the
+   with-lyrics wave a full-width band at the bottom, stops the Queue scrolling
+   sideways, and replaces the sheet's reuse of the reorder-row `is-dragging`
+   class (which could leave the whole sheet untappable) with `np-dragging`.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:

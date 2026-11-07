@@ -288,7 +288,22 @@
   new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['class'] });
   sync();
 
-  const openSheet = () => { if (panel.classList.contains('hidden')) lyricsBtn.click(); };
+  // swipe down on the sheet's header to close it
+  let startY = null;
+  let dragY = 0;
+  let dragRaf = 0;
+  // NOT `is-dragging`: that reorder-row class sets pointer-events: none !important, and a cancelled
+  // touch used to leave it on the panel, which made the whole sheet (X, tabs, lyrics, buttons) dead
+  const DRAG_CLASS = 'np-dragging';
+  const resetDrag = () => {
+    startY = null;
+    dragY = 0;
+    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
+    panel.classList.remove(DRAG_CLASS, 'is-dragging');
+    panel.style.transform = '';
+  };
+
+  const openSheet = () => { resetDrag(); if (panel.classList.contains('hidden')) lyricsBtn.click(); };
   const closeSheet = () => { if (!panel.classList.contains('hidden')) document.getElementById('btn-close-right-panel').click(); };
 
   // tapping the mini player (but not its buttons) opens the sheet
@@ -298,32 +313,33 @@
     openSheet();
   });
 
-  // swipe down on the sheet's top area to close it
-  let startY = null;
   panel.addEventListener('touchstart', (e) => {
     const t = e.touches[0];
+    if (!t) return;
     const lyrics = document.getElementById('lyrics-container');
-    // a finger on a seek bar or slider is seeking, not closing the sheet (#21)
-    if (e.target.closest('input[type="range"], .scrubber-track-container, [role="slider"]')) { startY = null; return; }
+    resetDrag();
+    // a finger on a seek bar or slider is seeking, not closing the sheet (#21); a finger in the queue
+    // or another scrolling list is scrolling it, and must not drag or close the sheet either
+    if (e.target.closest('input[type="range"], .scrubber-track-container, [role="slider"], #drawer-queue, .tracks-list')) return;
     startY = (lyrics && lyrics.contains(e.target) && lyrics.scrollTop > 0) ? null : t.clientY;
   }, { passive: true });
   // one transform write per frame, and no CSS transition while the finger drags (it lagged behind)
-  let dragY = 0, dragRaf = 0;
   panel.addEventListener('touchmove', (e) => {
-    if (startY === null) return;
+    if (startY === null || !e.touches[0]) return;
     dragY = Math.max(0, e.touches[0].clientY - startY);
-    if (dragY > 0 && !panel.classList.contains('is-dragging')) panel.classList.add('is-dragging');
+    if (dragY > 0 && !panel.classList.contains(DRAG_CLASS)) panel.classList.add(DRAG_CLASS);
     if (!dragRaf) dragRaf = requestAnimationFrame(() => { dragRaf = 0; if (startY !== null) panel.style.transform = dragY > 0 ? `translateY(${dragY}px)` : ''; });
   }, { passive: true });
   panel.addEventListener('touchend', (e) => {
     if (startY === null) return;
-    const dy = e.changedTouches[0].clientY - startY;
-    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
-    panel.classList.remove('is-dragging');
-    panel.style.transform = '';
-    startY = null;
+    const end = e.changedTouches && e.changedTouches[0];
+    const dy = end ? end.clientY - startY : 0;
+    resetDrag();
     if (dy > 110) closeSheet();
   });
+  // iOS cancels the touch stream when a system gesture takes over; without this the transform and the
+  // class used to stay behind
+  panel.addEventListener('touchcancel', resetDrag);
 
   // Picked images and videos (background, banner, song covers) are saved as file URLs, and those change when
   // iOS moves the app container (every update or reinstall). Rebuild each saved one from its file name, then

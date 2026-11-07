@@ -1,5 +1,5 @@
 diff --git a/app.js b/app.js
-index 69d5c18..e614e7d 100644
+index 69d5c18..3acc15c 100644
 --- a/app.js
 +++ b/app.js
 @@ -23,6 +23,32 @@
@@ -35,7 +35,22 @@ index 69d5c18..e614e7d 100644
  // localStorage (~5 MB) holds favorites, playlists, history, the queue and Encore. When it was full, every
  // setItem threw: a song tap failed before the stream was even requested and new favorites vanished on restart.
  // Free what can be rebuilt (the phone debug log, old Encore days) and retry; if it still doesn't fit, report
-@@ -3782,6 +3808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -2654,7 +2680,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+     }
+     const tvkCanvas = document.getElementById('tvk-visualizer-canvas');
+     if (tvkCanvas) {
+-      const cssW = Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
++      // with lyrics the phone shows the wave as a full-width band at the bottom of the karaoke page;
++      // tracks without lyrics keep the exact centred band they had
++      const tvRoot = document.getElementById('tv-karaoke');
++      const showsLyrics = !tvRoot || !tvRoot.classList.contains('tv-nolyrics');
++      const cssW = isPhoneApp && showsLyrics
++        ? Math.max(280, Math.round(window.innerWidth))
++        : Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
+       const cssH = Math.min(84, Math.max(52, Math.round(window.innerHeight * 0.085)));
+       cachedTvkWidth = cssW;
+       cachedTvkHeight = cssH;
+@@ -3782,6 +3814,7 @@ document.addEventListener('DOMContentLoaded', async () => {
        el.nativeAudio.pause();
        el.nativeAudio.removeAttribute('src');
        el.nativeAudio.load();
@@ -43,7 +58,7 @@ index 69d5c18..e614e7d 100644
      } catch (e) {}
  
      if (hlsInstance) {
-@@ -3873,6 +3900,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3873,6 +3906,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          if (currentToken !== state.loadToken) return;
          el.nativeAudio.preload = 'auto';
          el.nativeAudio.src = streamUrl;
@@ -51,7 +66,7 @@ index 69d5c18..e614e7d 100644
          playSmooth();
          applyAudioSettings();
          return;
-@@ -3936,6 +3964,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3936,6 +3970,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.nativeAudio.preload = 'auto';
  
      if (data.isHls && window.Hls && Hls.isSupported()) {
@@ -61,7 +76,7 @@ index 69d5c18..e614e7d 100644
        hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
        hlsInstance.loadSource(data.streamUrl);
        hlsInstance.attachMedia(el.nativeAudio);
-@@ -3967,6 +3998,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3967,6 +4004,9 @@ document.addEventListener('DOMContentLoaded', async () => {
        // which fetches with yt-dlp's headers; the direct URL stays as a fallback.
        const src = pickStreamSrc(data);
        proxyFallback = src !== data.streamUrl ? null : { token: currentToken, track, url: data.proxyUrl || '' };
@@ -71,7 +86,7 @@ index 69d5c18..e614e7d 100644
        el.nativeAudio.src = src;
        playSmooth();
      }
-@@ -3993,6 +4027,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3993,6 +4033,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      const me = el.nativeAudio.error;
      if (!me || (me.code !== 4 && me.code !== 2)) return false;
      console.warn('Track playback: direct stream failed, trying the local proxy');
@@ -79,7 +94,7 @@ index 69d5c18..e614e7d 100644
      el.nativeAudio.src = fb.url;
      playSmooth();
      return true;
-@@ -4908,6 +4943,8 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -4908,6 +4949,8 @@ document.addEventListener('DOMContentLoaded', async () => {
      tvIdleTimer = setTimeout(() => {
        const tvkPanel = document.getElementById('tvk-panel');
        if (tvkPanel && tvkPanel.classList.contains('open')) return;
@@ -88,7 +103,7 @@ index 69d5c18..e614e7d 100644
        if (state.isTvKaraokeOpen && el.tvKaraoke) {
          el.tvKaraoke.classList.add('tv-idle');
        }
-@@ -5342,7 +5379,11 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -5342,7 +5385,11 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.tvKaraokeClose.addEventListener('click', closeTvKaraoke);
    }
    if (el.tvKaraoke) {
@@ -101,7 +116,7 @@ index 69d5c18..e614e7d 100644
    }
  
    const btnTvkPrev = document.getElementById('btn-tvk-prev');
-@@ -10771,14 +10812,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -10771,14 +10818,22 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
    }
  
@@ -129,7 +144,7 @@ index 69d5c18..e614e7d 100644
    }
  
    syncVolumeControls();
-@@ -11373,8 +11422,31 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11373,8 +11428,31 @@ document.addEventListener('DOMContentLoaded', async () => {
      });
    }
  
@@ -161,7 +176,7 @@ index 69d5c18..e614e7d 100644
        const val = parseInt(e.target.value, 10);
        if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
        document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
-@@ -11463,7 +11535,15 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11463,7 +11541,15 @@ document.addEventListener('DOMContentLoaded', async () => {
    }, 50);
  
    if (el.sliderCornerRadius) {
@@ -177,7 +192,7 @@ index 69d5c18..e614e7d 100644
        const val = parseInt(e.target.value, 10);
        if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
        document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
-@@ -11473,7 +11553,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11473,7 +11559,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderUiAlpha) {
@@ -192,7 +207,7 @@ index 69d5c18..e614e7d 100644
        const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
-@@ -11494,7 +11581,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11494,7 +11587,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderTextAlpha) {
@@ -207,7 +222,7 @@ index 69d5c18..e614e7d 100644
        const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--text-alpha', `${val}%`);
-@@ -11740,7 +11834,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11740,7 +11840,7 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
@@ -216,7 +231,7 @@ index 69d5c18..e614e7d 100644
    function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
    function onBackgroundChanged(kind, enabled) {
      if (!getAdv('ui_alpha_auto', true)) return;
-@@ -11820,11 +11914,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11820,11 +11920,24 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
      document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
  
@@ -242,7 +257,7 @@ index 69d5c18..e614e7d 100644
      });
    }
  
-@@ -12317,6 +12424,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12317,6 +12430,97 @@ document.addEventListener('DOMContentLoaded', async () => {
      Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
      input.addEventListener('input', onChange);
    }
@@ -340,7 +355,7 @@ index 69d5c18..e614e7d 100644
    function enhanceSliders(root) {
      (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
        if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
-@@ -12332,6 +12530,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12332,6 +12536,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
        };
        watchSliderValue(input, sync);
@@ -348,7 +363,7 @@ index 69d5c18..e614e7d 100644
        sync();
      });
    }
-@@ -19784,9 +19983,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19784,9 +19989,13 @@ document.addEventListener('DOMContentLoaded', async () => {
        const a = el.nativeAudio;
        return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
      };
@@ -363,7 +378,7 @@ index 69d5c18..e614e7d 100644
        const t = (Number(slider.value) / 1000) * durNow();
        const curEl = document.getElementById('tvk-time-current');
        if (curEl) curEl.textContent = formatDuration(t);
-@@ -19799,8 +20002,12 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19799,8 +20008,12 @@ document.addEventListener('DOMContentLoaded', async () => {
          updateMediaPositionState();
        }
        tvkSeekDragging = false;
@@ -377,7 +392,7 @@ index 69d5c18..e614e7d 100644
      // the slider must not start a lyrics drag or hide the controls
      slider.addEventListener('mousemove', (e) => e.stopPropagation());
    })();
-@@ -20613,6 +20820,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -20613,6 +20826,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      next: () => playNext(),
      prev: () => playPrev(),
      seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
@@ -489,7 +504,7 @@ index f26c366..00157d5 100644
 +    }
 +}
 diff --git a/mobile/mobile-ui.js b/mobile/mobile-ui.js
-index 1e81309..87b5636 100644
+index 1e81309..10882ea 100644
 --- a/mobile/mobile-ui.js
 +++ b/mobile/mobile-ui.js
 @@ -3,12 +3,15 @@
@@ -773,8 +788,78 @@ index 1e81309..87b5636 100644
  (() => {
    const panel = document.getElementById('right-panel');
    const playbar = document.getElementById('playbar');
+@@ -30,7 +288,22 @@
+   new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['class'] });
+   sync();
+ 
+-  const openSheet = () => { if (panel.classList.contains('hidden')) lyricsBtn.click(); };
++  // swipe down on the sheet's header to close it
++  let startY = null;
++  let dragY = 0;
++  let dragRaf = 0;
++  // NOT `is-dragging`: that reorder-row class sets pointer-events: none !important, and a cancelled
++  // touch used to leave it on the panel, which made the whole sheet (X, tabs, lyrics, buttons) dead
++  const DRAG_CLASS = 'np-dragging';
++  const resetDrag = () => {
++    startY = null;
++    dragY = 0;
++    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
++    panel.classList.remove(DRAG_CLASS, 'is-dragging');
++    panel.style.transform = '';
++  };
++
++  const openSheet = () => { resetDrag(); if (panel.classList.contains('hidden')) lyricsBtn.click(); };
+   const closeSheet = () => { if (!panel.classList.contains('hidden')) document.getElementById('btn-close-right-panel').click(); };
+ 
+   // tapping the mini player (but not its buttons) opens the sheet
+@@ -40,32 +313,33 @@
+     openSheet();
+   });
+ 
+-  // swipe down on the sheet's top area to close it
+-  let startY = null;
+   panel.addEventListener('touchstart', (e) => {
+     const t = e.touches[0];
++    if (!t) return;
+     const lyrics = document.getElementById('lyrics-container');
+-    // a finger on a seek bar or slider is seeking, not closing the sheet (#21)
+-    if (e.target.closest('input[type="range"], .scrubber-track-container, [role="slider"]')) { startY = null; return; }
++    resetDrag();
++    // a finger on a seek bar or slider is seeking, not closing the sheet (#21); a finger in the queue
++    // or another scrolling list is scrolling it, and must not drag or close the sheet either
++    if (e.target.closest('input[type="range"], .scrubber-track-container, [role="slider"], #drawer-queue, .tracks-list')) return;
+     startY = (lyrics && lyrics.contains(e.target) && lyrics.scrollTop > 0) ? null : t.clientY;
+   }, { passive: true });
+   // one transform write per frame, and no CSS transition while the finger drags (it lagged behind)
+-  let dragY = 0, dragRaf = 0;
+   panel.addEventListener('touchmove', (e) => {
+-    if (startY === null) return;
++    if (startY === null || !e.touches[0]) return;
+     dragY = Math.max(0, e.touches[0].clientY - startY);
+-    if (dragY > 0 && !panel.classList.contains('is-dragging')) panel.classList.add('is-dragging');
++    if (dragY > 0 && !panel.classList.contains(DRAG_CLASS)) panel.classList.add(DRAG_CLASS);
+     if (!dragRaf) dragRaf = requestAnimationFrame(() => { dragRaf = 0; if (startY !== null) panel.style.transform = dragY > 0 ? `translateY(${dragY}px)` : ''; });
+   }, { passive: true });
+   panel.addEventListener('touchend', (e) => {
+     if (startY === null) return;
+-    const dy = e.changedTouches[0].clientY - startY;
+-    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
+-    panel.classList.remove('is-dragging');
+-    panel.style.transform = '';
+-    startY = null;
++    const end = e.changedTouches && e.changedTouches[0];
++    const dy = end ? end.clientY - startY : 0;
++    resetDrag();
+     if (dy > 110) closeSheet();
+   });
++  // iOS cancels the touch stream when a system gesture takes over; without this the transform and the
++  // class used to stay behind
++  panel.addEventListener('touchcancel', resetDrag);
+ 
+   // Picked images and videos (background, banner, song covers) are saved as file URLs, and those change when
+   // iOS moves the app container (every update or reinstall). Rebuild each saved one from its file name, then
 diff --git a/mobile/mobile.css b/mobile/mobile.css
-index 55aebca..00be995 100644
+index 55aebca..aac3ab4 100644
 --- a/mobile/mobile.css
 +++ b/mobile/mobile.css
 @@ -199,7 +199,6 @@ html.is-mobile body.np-open .playback-controls { justify-content: space-between
@@ -806,7 +891,7 @@ index 55aebca..00be995 100644
  
  /* Riff 42.3 gave the Now Playing header min-height:0, so in the sheet's column it shrank to a few px and the
     lyrics tools (edit / sync / translate / fullscreen / Word) got clipped under the tabs */
-@@ -592,7 +603,48 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
+@@ -592,7 +603,60 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
  html.is-mobile .tvk-row:has(#btn-tvk-viz-connected) { display: none !important; }
  html.is-mobile .tvk-liquid-layer { animation: none !important; }
  html.is-mobile .nav-home-app-icon { width: 28px; height: 28px; border-radius: 8px; }
@@ -839,9 +924,11 @@ index 55aebca..00be995 100644
 +html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
 +/* the wave sits above the bottom seek row instead of behind it */
 +html.is-mobile .tvk-visualizer { bottom: calc(var(--safe-bottom) + 52px); }
-+/* with lyrics the desktop layout only shows the wave when "visualizer with lyrics" is enabled; the
-+   phone has room above the seek row, so draw it anyway unless the karaoke visualizer was turned off */
-+html.is-mobile .tv-karaoke:not(.no-tvk-visualizer) .tvk-visualizer { display: flex; }
++/* with lyrics the wave becomes an edge-to-edge band that hugs the seek row, instead of a centred
++   band floating in the middle of the lyrics */
++html.is-mobile .tv-karaoke:not(.tv-nolyrics).tvk-show-lyrics-visualizer .tvk-visualizer {
++  bottom: calc(var(--safe-bottom) + 44px);
++}
 +html.is-mobile .tvk-seek-slider,
 +html.is-mobile #tvk-seek-slider {
 +  touch-action: none;
@@ -853,6 +940,16 @@ index 55aebca..00be995 100644
 +html.is-mobile #right-panel { overflow-x: hidden !important; }
 +html.is-mobile .lyrics-container { touch-action: pan-y !important; }
 +html.is-mobile .lyrics-container .lyric-line { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
++
++/* ---------- queue pane ---------- */
++/* the negative margin on the list made the pane wider than the screen, so it scrolled sideways */
++html.is-mobile #drawer-queue { overflow-x: hidden !important; }
++html.is-mobile #drawer-queue .tracks-list { margin: 0 !important; }
++html.is-mobile .drawer-pane { min-width: 0 !important; max-width: 100% !important; }
++/* a drag offset or stale drag class must never leave the sheet untappable */
++html.is-mobile #right-panel.is-dragging,
++html.is-mobile #right-panel.np-dragging { pointer-events: auto !important; }
++html.is-mobile #right-panel.np-dragging { transition: none !important; }
  html.is-mobile .cc-handle { width: 24px; }
  html.is-mobile .cc-handle-left { left: -12px; }
  html.is-mobile .cc-handle-right { right: -12px; }

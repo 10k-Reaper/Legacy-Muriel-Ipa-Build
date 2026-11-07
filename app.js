@@ -2680,7 +2680,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const tvkCanvas = document.getElementById('tvk-visualizer-canvas');
     if (tvkCanvas) {
-      const cssW = Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
+      // with lyrics the phone shows the wave as a full-width band at the bottom of the karaoke page;
+      // tracks without lyrics keep the exact centred band they had
+      const tvRoot = document.getElementById('tv-karaoke');
+      const showsLyrics = !tvRoot || !tvRoot.classList.contains('tv-nolyrics');
+      const cssW = isPhoneApp && showsLyrics
+        ? Math.max(280, Math.round(window.innerWidth))
+        : Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
       const cssH = Math.min(84, Math.max(52, Math.round(window.innerHeight * 0.085)));
       cachedTvkWidth = cssW;
       cachedTvkHeight = cssH;

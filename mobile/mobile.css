@@ -631,9 +631,11 @@ html.is-mobile .tvk-progress-row {
 html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
 /* the wave sits above the bottom seek row instead of behind it */
 html.is-mobile .tvk-visualizer { bottom: calc(var(--safe-bottom) + 52px); }
-/* with lyrics the desktop layout only shows the wave when "visualizer with lyrics" is enabled; the
-   phone has room above the seek row, so draw it anyway unless the karaoke visualizer was turned off */
-html.is-mobile .tv-karaoke:not(.no-tvk-visualizer) .tvk-visualizer { display: flex; }
+/* with lyrics the wave becomes an edge-to-edge band that hugs the seek row, instead of a centred
+   band floating in the middle of the lyrics */
+html.is-mobile .tv-karaoke:not(.tv-nolyrics).tvk-show-lyrics-visualizer .tvk-visualizer {
+  bottom: calc(var(--safe-bottom) + 44px);
+}
 html.is-mobile .tvk-seek-slider,
 html.is-mobile #tvk-seek-slider {
   touch-action: none;
@@ -645,6 +647,16 @@ html.is-mobile .lyrics-section,
 html.is-mobile #right-panel { overflow-x: hidden !important; }
 html.is-mobile .lyrics-container { touch-action: pan-y !important; }
 html.is-mobile .lyrics-container .lyric-line { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+
+/* ---------- queue pane ---------- */
+/* the negative margin on the list made the pane wider than the screen, so it scrolled sideways */
+html.is-mobile #drawer-queue { overflow-x: hidden !important; }
+html.is-mobile #drawer-queue .tracks-list { margin: 0 !important; }
+html.is-mobile .drawer-pane { min-width: 0 !important; max-width: 100% !important; }
+/* a drag offset or stale drag class must never leave the sheet untappable */
+html.is-mobile #right-panel.is-dragging,
+html.is-mobile #right-panel.np-dragging { pointer-events: auto !important; }
+html.is-mobile #right-panel.np-dragging { transition: none !important; }
 html.is-mobile .cc-handle { width: 24px; }
 html.is-mobile .cc-handle-left { left: -12px; }
 html.is-mobile .cc-handle-right { right: -12px; }

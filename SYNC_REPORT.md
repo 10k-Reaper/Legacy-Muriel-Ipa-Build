@@ -193,9 +193,22 @@ It surfaced three more visual issues, all fixed in the same cumulative patch 9:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| No playbar visualizer at all, in either the compact-bars or the wavy/liquid style, in Now Playing or Karaoke. | `CanvasRenderingContext2D.roundRect()` only reached Safari 16.4. On iOS 15.4 the first bar draw threw, which aborted the whole frame before the karaoke and behind-bar canvases were reached, so every frame was blank. Karaoke also left its wave `display: none` whenever lyrics were present. | `app.js` installs a `roundRect` polyfill on `CanvasRenderingContext2D.prototype` before startup. The phone analyser graph now survives iOS refusing the mirror element (stub analyser plus synthetic spectrum), and phones draw the karaoke wave with lyrics unless the karaoke visualizer is switched off. |
+| No playbar visualizer at all, in either the compact-bars or the wavy/liquid style, in Now Playing or Karaoke. | `CanvasRenderingContext2D.roundRect()` only reached Safari 16.4. On iOS 15.4 the first bar draw threw, which aborted the whole frame before the karaoke and behind-bar canvases were reached, so every frame was blank. | `app.js` installs a `roundRect` polyfill on `CanvasRenderingContext2D.prototype` before startup. The phone analyser graph now survives iOS refusing the mirror element (stub analyser plus synthetic spectrum). |
 | Lyrics in Now Playing could be panned sideways. | Lyric lines used `overflow: visible`, so a long line could widen the container and turn it into a horizontal scroller. | `overflow-x: hidden` and `touch-action: pan-y` on the phone lyrics container, plus `overflow-wrap: anywhere` on the lines. |
 | "Your genres" wrapped onto several rows. | `.fy-genres` used `flex-wrap: wrap`. | It is now a single-row horizontal scroller with snap points and a hidden scrollbar, like the other "For you" rows. |
 
 The appearance sliders still feel laggy on the device; the user judged that
 non-blocking, so no further change was made.
+
+## Fifth iPhone pass (patch 9, cumulative)
+
+This pass confirmed the Now Playing seek bar, lyric scrolling and "Your genres",
+and the karaoke wave for tracks without lyrics. Four follow-ups were fixed in
+the same cumulative patch 9:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The karaoke visualizer settings appeared to do nothing: the wave showed with or without lyrics whichever toggle was set. | The fourth pass forced `display: flex` on `.tvk-visualizer` for every phone karaoke page, overriding the setting-driven rules. | The override is gone. Tracks without lyrics show the wave only while "Visualizer in full karaoke mode" is on; tracks with lyrics show it only while "Visualizer with lyrics" is on. |
+| With lyrics on, the wave was a narrow centred band floating in the middle of the lyrics. | `resizeCanvases` capped the karaoke canvas at 64% of the window (minimum 360px), and the phone offset sat 52px above the bottom. | With lyrics on a phone the canvas is edge to edge and the wave sits just above the seek row. Tracks without lyrics keep their previous centred band and position. |
+| The Queue could be scrolled sideways. | `#drawer-queue` had `overflow-y: auto` (which computes `overflow-x: auto`) and its list used `margin: 0 -8px`, so it was 16px wider than the pane. | `overflow-x: hidden` on the queue pane, the negative margin removed, and the panes constrained to the sheet's width. |
+| After scrolling the Queue, the whole Now Playing sheet stopped taking taps: close, tabs, lyrics, hearts, rows. | The sheet's swipe-to-close reused the reorder-row class `is-dragging`, whose global rule sets `pointer-events: none !important`. A touch the browser cancelled left the class on the panel, so every child stopped receiving input. | The sheet now uses its own `np-dragging` class (no pointer-events change), resets on `touchcancel` and on every new touch (guarding an empty `changedTouches`), ignores drags that start in the Queue or another scrolling list, resets when the sheet opens, and a CSS safety rule re-enables pointer events if `is-dragging` is ever found on the panel. |
