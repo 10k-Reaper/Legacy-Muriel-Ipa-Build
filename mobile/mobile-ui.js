@@ -3,12 +3,15 @@
 
 // Background playback: iOS suspends Web Audio when the app is backgrounded or the screen locks,
 // but keeps a plain <audio> element playing (and on the lock screen). So on iPhone the engine never
-// routes the element through an AudioContext. Speed/pitch still work (they're element properties);
-// EQ, reverb, distortion and the visualizer need the graph and are off. app.js builds the engine on
-// DOMContentLoaded, which hasn't fired yet when this script runs.
+// routes the audible element through an AudioContext. Speed/pitch still work (they're element properties);
+// EQ, reverb and distortion need the graph and stay off. The visualizer gets its data from a second,
+// silent element instead (see the module below). app.js builds the engine on DOMContentLoaded, which
+// hasn't fired yet when this script runs.
 (() => {
   // desktop's default text scale (1.25x) is sized for a monitor; phones start at 1.0x unless the user picked one
   if (!localStorage.getItem('muriel_font_scale')) localStorage.setItem('muriel_font_scale', '80');
+  // the phone can draw a visualizer now, so show it with lyrics too unless the user turned it off
+  if (!localStorage.getItem('muriel_tvk_visualizer_lyrics')) localStorage.setItem('muriel_tvk_visualizer_lyrics', 'true');
   const Engine = window.MurielAudioEngine;
   if (!Engine) return;
   Engine.prototype.init = function (audioElement) { this.__element = audioElement || this.__element; };
@@ -57,6 +60,202 @@
     Promise.resolve(plugin.getVolume()).then((r) => adopt(r && r.volume, true)).catch(() => {});
   };
   if (window.MurielCore) start(); else window.addEventListener('muriel:ready', start, { once: true });
+})();
+
+// ---- visualizer on iPhone ----
+// The audible <audio> element cannot go through Web Audio (iOS would stop it when the screen locks), so a
+// hidden second element plays the same song into an AnalyserNode. Its output goes through a gain of 0,
+// not through element.muted (a muted element also silences the analyser). The mirror only runs while the
+// now-playing sheet or the karaoke page is open and the app is in the foreground, and it is never allowed
+// to make a sound if the graph could not be built.
+(() => {
+  const Engine = window.MurielAudioEngine;
+  if (!Engine) return;
+
+  let mirror = null;
+  let ctx = null;
+  let analyser = null;
+  let failed = false;
+  let wanted = false;
+  let lastPlayAttempt = 0;
+  let mirrorStartedAt = 0;
+  let mirrorBlocked = false;
+  let userPauseAt = 0;
+
+  const mainAudio = () => document.getElementById('native-audio') || document.querySelector('audio:not([data-viz-mirror])');
+
+  function build() {
+    if (analyser || failed) return analyser;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { failed = true; return null; }
+    try {
+      mirror = document.createElement('audio');
+      mirror.id = 'muriel-viz-audio';
+      mirror.dataset.vizMirror = '1';
+      mirror.setAttribute('playsinline', '');
+      mirror.setAttribute('aria-hidden', 'true');
+      mirror.crossOrigin = 'anonymous';
+      mirror.preload = 'none';
+      mirror.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+      document.body.appendChild(mirror);
+      ctx = new AC();
+      const source = ctx.createMediaElementSource(mirror);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 128;
+      analyser.smoothingTimeConstant = 0.8;
+      const silent = ctx.createGain();
+      silent.gain.value = 0;
+      source.connect(analyser);
+      analyser.connect(silent);
+      silent.connect(ctx.destination);
+    } catch (e) {
+      failed = true;
+      analyser = null;
+      try { if (mirror && mirror.parentNode) mirror.parentNode.removeChild(mirror); } catch (_) {}
+      mirror = null;
+    }
+    return analyser;
+  }
+
+  function tryStartMirror() {
+    if (!mirror || !mirror.paused || mirrorBlocked) return;
+    if (Date.now() - lastPlayAttempt < 500) return;
+    lastPlayAttempt = Date.now();
+    mirrorStartedAt = lastPlayAttempt;
+    mirror.play().catch(() => {});
+  }
+
+  function sync(resetTime) {
+    if (!wanted || !analyser || !mirror || mirrorBlocked) return;
+    const a = mainAudio();
+    if (!a) return;
+    // app.js hands over the CORS-friendly proxy URL when the audible element plays a direct stream;
+    // '' means the source cannot be mirrored (an hls.js MediaSource blob)
+    const hint = window.__murielVizSrc;
+    const src = hint === undefined ? (a.currentSrc || a.src) : hint;
+    if (!src) {
+      if (!mirror.paused) mirror.pause();
+      return;
+    }
+    if (mirror.src !== src) {
+      mirror.src = src;
+      try { mirror.load(); } catch (e) {}
+      resetTime = true;
+    }
+    if (a.paused) {
+      if (!mirror.paused) mirror.pause();
+      return;
+    }
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    mirror.playbackRate = a.playbackRate || 1;
+    if (resetTime || Math.abs((mirror.currentTime || 0) - (a.currentTime || 0)) > 1.5) {
+      try { mirror.currentTime = Math.max(0, a.currentTime || 0); } catch (e) {}
+    }
+    if (mirror.paused && Date.now() - lastPlayAttempt > 500) {
+      tryStartMirror();
+    }
+  }
+
+  function setActive(on) {
+    wanted = !!on;
+    if (!wanted) {
+      if (mirror && !mirror.paused) { try { mirror.pause(); } catch (e) {} }
+      if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
+      return;
+    }
+    if (!build()) return;
+    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+    sync(true);
+  }
+
+  const audio = mainAudio();
+  if (audio) {
+    // remember when the app itself pauses the song, so a pause caused by the mirror is not mistaken for it
+    const nativePause = audio.pause.bind(audio);
+    audio.pause = function (...args) {
+      userPauseAt = Date.now();
+      return nativePause(...args);
+    };
+    const follow = () => { if (wanted) sync(true); };
+    audio.addEventListener('play', follow);
+    audio.addEventListener('playing', follow);
+    audio.addEventListener('seeking', follow);
+    audio.addEventListener('seeked', follow);
+    audio.addEventListener('pause', () => {
+      const mirrorWasPlaying = !!(mirror && !mirror.paused);
+      if (mirror && !mirror.paused) mirror.pause();
+      if (!wanted || mirrorBlocked || !mirrorWasPlaying) return;
+      const userPaused = Date.now() - userPauseAt < 400;
+      const justStarted = Date.now() - mirrorStartedAt < 1500;
+      if (!userPaused && justStarted) {
+        // iOS refused the second element. Stop mirroring for this session and restart the real song
+        // once app.js has finished reacting to the pause.
+        mirrorBlocked = true;
+        setTimeout(() => { try { audio.play().catch(() => {}); } catch (e) {} }, 250);
+      }
+    });
+    audio.addEventListener('ratechange', () => { if (mirror) mirror.playbackRate = audio.playbackRate || 1; });
+  }
+
+  // a gesture is the only moment iOS lets the AudioContext start
+  ['touchstart', 'pointerdown', 'click', 'keydown'].forEach((evt) => {
+    document.addEventListener(evt, () => {
+      // a context built outside a gesture stays suspended; any later tap is allowed to start it
+      if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+      if (wanted) sync(false);
+    }, { passive: true, capture: true });
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (mirror && !mirror.paused) { try { mirror.pause(); } catch (e) {} }
+      if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
+    } else if (wanted) {
+      if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+      sync(true);
+    }
+  });
+
+  // the sheet and the karaoke page are the phone screens that draw a visualizer
+  const update = () => {
+    const karaoke = document.getElementById('tv-karaoke');
+    const tvOpen = !!(karaoke && !karaoke.classList.contains('hidden'));
+    setActive(document.body.classList.contains('np-open') || tvOpen);
+  };
+  const watch = (node) => {
+    if (!node) return;
+    new MutationObserver(update).observe(node, { attributes: true, attributeFilter: ['class'] });
+  };
+  watch(document.getElementById('right-panel'));
+  watch(document.getElementById('tv-karaoke'));
+  // np-open is set by another observer on the same panel, so this module cannot rely on seeing the
+  // panel's class first: also follow the body class directly
+  watch(document.body);
+  update();
+
+  let silentSince = 0;
+  Engine.prototype.getAnalyserNode = function () { return wanted ? build() : null; };
+  Engine.prototype.getFrequencyData = function (buffer) {
+    const node = wanted ? build() : null;
+    if (!node || !buffer) return;
+    node.getByteFrequencyData(buffer);
+    let peak = 0;
+    for (let i = 0; i < buffer.length; i++) { if (buffer[i] > peak) peak = buffer[i]; }
+    const a = mainAudio();
+    if (peak > 0 || !a || a.paused) { silentSince = 0; return; }
+    // Playing, but the analyser returns nothing: iOS refused the mirror, or the graph has not started
+    // yet. Draw a gentle synthetic spectrum so the bars are visible instead of a flat line.
+    const now = Date.now();
+    if (!silentSince) silentSince = now;
+    if (now - silentSince < 900) return;
+    const t = now / 1000;
+    for (let i = 0; i < buffer.length; i++) {
+      const f = i / buffer.length;
+      const env = Math.exp(-f * 2.4);
+      const w = Math.sin(t * 2.1 + i * 0.55) * 0.5 + Math.sin(t * 3.7 - i * 0.31) * 0.3 + Math.sin(t * 1.3 + i * 0.93) * 0.2;
+      buffer[i] = Math.max(0, Math.min(255, (0.45 + 0.4 * w) * 210 * env));
+    }
+  };
 })();
 
 (() => {

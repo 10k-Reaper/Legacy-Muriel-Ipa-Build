@@ -3782,6 +3782,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       el.nativeAudio.pause();
       el.nativeAudio.removeAttribute('src');
       el.nativeAudio.load();
+      window.__murielVizSrc = '';
     } catch (e) {}
 
     if (hlsInstance) {
@@ -3873,6 +3874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentToken !== state.loadToken) return;
         el.nativeAudio.preload = 'auto';
         el.nativeAudio.src = streamUrl;
+        window.__murielVizSrc = streamUrl;
         playSmooth();
         applyAudioSettings();
         return;
@@ -3936,6 +3938,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.nativeAudio.preload = 'auto';
 
     if (data.isHls && window.Hls && Hls.isSupported()) {
+      // hls.js feeds the element a MediaSource blob; a second element cannot analyse that, so the phone
+      // visualizer falls back to its synthetic waveform for HLS streams
+      window.__murielVizSrc = '';
       hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
       hlsInstance.loadSource(data.streamUrl);
       hlsInstance.attachMedia(el.nativeAudio);
@@ -3967,6 +3972,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       // which fetches with yt-dlp's headers; the direct URL stays as a fallback.
       const src = pickStreamSrc(data);
       proxyFallback = src !== data.streamUrl ? null : { token: currentToken, track, url: data.proxyUrl || '' };
+      // the phone visualizer's silent mirror element uses the proxy URL when there is one: it answers CORS,
+      // so the analyser gets real samples even though the audible element plays the direct stream
+      window.__murielVizSrc = data.proxyUrl || src;
       el.nativeAudio.src = src;
       playSmooth();
     }
@@ -3993,6 +4001,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const me = el.nativeAudio.error;
     if (!me || (me.code !== 4 && me.code !== 2)) return false;
     console.warn('Track playback: direct stream failed, trying the local proxy');
+    window.__murielVizSrc = fb.url;
     el.nativeAudio.src = fb.url;
     playSmooth();
     return true;
@@ -4908,6 +4917,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     tvIdleTimer = setTimeout(() => {
       const tvkPanel = document.getElementById('tvk-panel');
       if (tvkPanel && tvkPanel.classList.contains('open')) return;
+      // a finger held still on the seek bar is still using it: keep the row on screen, then try again
+      if (tvkSeekDragging) { resetTvIdleTimer(); return; }
       if (state.isTvKaraokeOpen && el.tvKaraoke) {
         el.tvKaraoke.classList.add('tv-idle');
       }
@@ -5342,7 +5353,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.tvKaraokeClose.addEventListener('click', closeTvKaraoke);
   }
   if (el.tvKaraoke) {
-    el.tvKaraoke.addEventListener('mousemove', resetTvIdleTimer);
+    // touch devices never fire mousemove, so the controls used to fade out under a finger that was
+    // still holding the seek bar (issue: the bar vanished while dragging)
+    ['mousemove', 'pointermove', 'pointerdown', 'touchstart', 'touchmove'].forEach((evt) => {
+      el.tvKaraoke.addEventListener(evt, resetTvIdleTimer, { passive: true });
+    });
   }
 
   const btnTvkPrev = document.getElementById('btn-tvk-prev');
@@ -11381,8 +11396,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Custom properties live on :root, so writing one invalidates the style of the whole document. On a phone
+  // that made these settings stutter while a value was dragged. Keep the label live but apply the newest value
+  // at most once per frame, and save to localStorage when the finger is lifted.
+  const sliderFrame = (apply) => {
+    let raf = 0;
+    let next;
+    return (value) => {
+      next = value;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        apply(next);
+      });
+    };
+  };
+
   if (el.sliderFontScale) {
+    const applyFontScale = sliderFrame((val) => {
+      if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
+      document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
+    });
     el.sliderFontScale.addEventListener('input', (e) => {
+      applyFontScale(parseInt(e.target.value, 10));
+    });
+    el.sliderFontScale.addEventListener('change', (e) => {
       const val = parseInt(e.target.value, 10);
       if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
       document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
@@ -11471,7 +11509,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, 50);
 
   if (el.sliderCornerRadius) {
+    const applyCornerRadius = sliderFrame((val) => {
+      if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
+      document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
+      document.documentElement.style.setProperty('--md-shape-corner-m', `${Math.max(0, val - 4)}px`);
+    });
     el.sliderCornerRadius.addEventListener('input', (e) => {
+      applyCornerRadius(parseInt(e.target.value, 10));
+    });
+    el.sliderCornerRadius.addEventListener('change', (e) => {
       const val = parseInt(e.target.value, 10);
       if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
       document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
@@ -11481,7 +11527,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (el.sliderUiAlpha) {
+    const applyUiAlpha = sliderFrame((val) => {
+      if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
+      document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
+    });
     el.sliderUiAlpha.addEventListener('input', (e) => {
+      applyUiAlpha(Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100)));
+    });
+    el.sliderUiAlpha.addEventListener('change', (e) => {
       const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
       if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
@@ -11502,7 +11555,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (el.sliderTextAlpha) {
+    const applyTextAlpha = sliderFrame((val) => {
+      if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
+      document.documentElement.style.setProperty('--text-alpha', `${val}%`);
+    });
     el.sliderTextAlpha.addEventListener('input', (e) => {
+      applyTextAlpha(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100)));
+    });
+    el.sliderTextAlpha.addEventListener('change', (e) => {
       const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
       if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--text-alpha', `${val}%`);
@@ -11748,7 +11808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
-  function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); }
+  function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); }
   function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
   function onBackgroundChanged(kind, enabled) {
     if (!getAdv('ui_alpha_auto', true)) return;
@@ -11828,11 +11888,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
     document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
 
+    const applyCoverBrightness = typeof sliderFrame === 'function' ? sliderFrame((v) => {
+      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
+      document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
+    }) : null;
+
     sliderCoverBgBrightness.addEventListener('input', (e) => {
       const v = parseInt(e.target.value, 10);
+      if (applyCoverBrightness) applyCoverBrightness(v);
+      else {
+        if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
+        document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
+      }
+    });
+    sliderCoverBgBrightness.addEventListener('change', (e) => {
+      const v = parseInt(e.target.value, 10);
       if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
-      localStorage.setItem('muriel_cover_bg_brightness', String(v));
       document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
+      localStorage.setItem('muriel_cover_bg_brightness', String(v));
     });
   }
 
@@ -19884,9 +19957,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const a = el.nativeAudio;
       return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
     };
-    slider.addEventListener('pointerdown', () => { tvkSeekDragging = true; });
+    const startSeekDrag = () => { tvkSeekDragging = true; resetTvIdleTimer(); };
+    const endSeekDrag = () => { tvkSeekDragging = false; resetTvIdleTimer(); };
+    slider.addEventListener('pointerdown', startSeekDrag);
+    slider.addEventListener('touchstart', startSeekDrag, { passive: true });
     slider.addEventListener('input', () => {
       tvkSeekDragging = true;
+      resetTvIdleTimer();
       const t = (Number(slider.value) / 1000) * durNow();
       const curEl = document.getElementById('tvk-time-current');
       if (curEl) curEl.textContent = formatDuration(t);
@@ -19899,8 +19976,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateMediaPositionState();
       }
       tvkSeekDragging = false;
+      resetTvIdleTimer();
     });
-    slider.addEventListener('pointerup', () => { setTimeout(() => { tvkSeekDragging = false; }, 0); });
+    slider.addEventListener('pointerup', () => { setTimeout(endSeekDrag, 0); });
+    slider.addEventListener('pointercancel', () => { setTimeout(endSeekDrag, 0); });
+    slider.addEventListener('touchend', () => { setTimeout(endSeekDrag, 0); }, { passive: true });
+    slider.addEventListener('touchcancel', () => { setTimeout(endSeekDrag, 0); }, { passive: true });
     // the slider must not start a lyrics drag or hide the controls
     slider.addEventListener('mousemove', (e) => e.stopPropagation());
   })();

@@ -126,7 +126,9 @@ These should be confirmed once on macOS or Linux CI before merging to `main`.
   interruption resume, downloads, deep links, and the settings UI.
 - The fullscreen karaoke fixes in patch 9 (notch spacing, bottom seek bar, iOS
   system volume, drag-anywhere bars, off-bar dragging, Word-lyrics fallback) were
-  made after that test, so they still need a fresh CI build and an iPhone check.
+  made after that test. The follow-up iPhone pass confirmed those worked; the four
+  findings it raised are now in the same cumulative patch and still need a fresh
+  CI build and an iPhone check.
 
 ## Gate for merging
 
@@ -136,8 +138,8 @@ Merge `sync/upstream-2df82f5` into `main` only after:
 2. ~~The artifact reports app minimum `15.0`, widget minimum `16.2`, and binary
    `minos 15.0`.~~ Passed.
 3. ~~An iOS 15 device smoke test passes.~~ Passed on iPhone XR / iOS 15.4.1.
-4. The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in both
-   patch-9 tables pass on the iPhone.
+4. The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in all
+   three patch-9 tables pass on the iPhone.
 5. `npm test` is re-run on a non-Windows environment (or the five failures are
    confirmed as pre-existing environment issues).
 
@@ -166,6 +168,19 @@ The lock-screen elapsed/duration display (`0:01` / `0:00`, full bar, seeking onl
 after tapping the bar or pause/play) is the iOS Now Playing behaviour tracked
 upstream in `cloverscripts/riff-muriel#26`; no further change was made in this
 pass and it remains a known limitation.
+
+## Third iPhone pass (patch 9, cumulative)
+
+The next iPhone XR / iOS 15.4.1 pass confirmed the off-bar dragging, slider
+minimums and Word lyrics. It raised four more issues, all fixed in the same
+cumulative patch 9:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The karaoke seek bar faded out while a finger was still holding it (seeking itself worked). | `.tv-karaoke.tv-idle .tvk-progress-row` fades to `opacity: 0`, and the idle timer was only reset by `mousemove`, which touch devices do not fire. | The karaoke overlay resets the timer on `touchstart`/`touchmove`/`pointerdown`/`pointermove`, the seek slider resets it on `pointerdown`/`input`, and the idle timeout is deferred while `tvkSeekDragging` is true. |
+| The visualizer never appeared in karaoke or any other phone view. | The audible element deliberately stays outside Web Audio for background playback, so there was no analyser; phone CSS also hid every visualizer container. | `mobile/mobile-ui.js` now runs a hidden mirror `<audio>` into an `AnalyserNode` (gain 0, never audible) using the CORS-friendly proxy/local URL, only while the now-playing sheet or karaoke is open and the app is foreground. A guard detects iOS pausing the real element, stops the mirror and restarts the song; when the analyser has no signal it draws a gentle synthetic spectrum so the bars are never a flat line. The compact visualizer is shown in the now-playing sheet, and karaoke shows its wave with lyrics by default on phones. |
+| Some home-page rows scrolled vertically. | `overflow-x: auto` also makes the row a vertical scroll container, so it could catch the page scroll. | `overflow-y: hidden` on `.fy-row`, `.home-pl-row`, `.sp-row` and `.search-albums-row`; `.sp-row` also gets `2px` top padding so its hover lift is not clipped (the CSS half of upstream PR #44). |
+| The cover-brightness, text-opacity, interface-opacity, font-scale and corner-radius settings lagged while dragging. | Every `input` wrote a `:root` custom property (a whole-document style invalidation) and called `localStorage`, `refreshCachedThemeColors()` (forced `getComputedStyle`) or `updateEngineWidthVar()` (forced layout). | Values are applied at most once per animation frame, the label stays live, and storage plus the expensive layout/theme refresh run on `change` (finger release). |
 
 The native plugin is registered in `capacitorDidLoad`, so `npx cap sync ios` must
 run before the Xcode build. All of these changes are covered by

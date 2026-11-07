@@ -199,7 +199,6 @@ html.is-mobile body.np-open .playback-controls { justify-content: space-between 
 html.is-mobile body.np-open .btn-play-pause { width: 64px !important; height: 64px !important; }
 html.is-mobile body.np-open .playbar-right { display: flex !important; justify-content: space-around !important; width: 100% !important; }
 html.is-mobile body.np-open .volume-control-group,
-html.is-mobile body.np-open .visualizer-container,
 html.is-mobile body.np-open #btn-toggle-lyrics-panel { display: none !important; }
 
 /* ---------- views, settings and dialogs at phone width ---------- */
@@ -479,7 +478,19 @@ html.is-mobile .home-pane-label { min-width: 0; padding: 6px 4px; white-space: n
 html.is-mobile .np-ambient i { animation: none !important; will-change: auto; }
 html.is-mobile :is(.bg-mesh-layer, #mesh-gradient, .shape-pill, .shape-egg, .shape-triangle, .cover-container.spinning, .logo-star path, #sleep-timer-status.active::before) { animation: none !important; }
 html.is-mobile *, html.is-mobile *::before, html.is-mobile *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
-html.is-mobile #visualizer-container, html.is-mobile #mini-visualizer { display: none !important; }
+html.is-mobile #mini-visualizer { display: none !important; }
+/* the silent mirror element (mobile-ui.js) gives the analyser real data, so the compact visualizer can
+   sit in the now-playing sheet's player bar. It is the only visualizer the phone layout has room for,
+   and only the sheet draws it: the mini player has no space. */
+html.is-mobile body.np-open #visualizer-container {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+html.is-mobile body.np-open.bar-viz-behind #visualizer-container { display: flex !important; }
 
 /* Riff 42.3 gave the Now Playing header min-height:0, so in the sheet's column it shrank to a few px and the
    lyrics tools (edit / sync / translate / fullscreen / Word) got clipped under the tabs */
@@ -618,6 +629,8 @@ html.is-mobile .tvk-progress-row {
   z-index: 8;
 }
 html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
+/* the wave sits above the bottom seek row instead of behind it */
+html.is-mobile .tvk-visualizer { bottom: calc(var(--safe-bottom) + 52px); }
 html.is-mobile .tvk-seek-slider,
 html.is-mobile #tvk-seek-slider {
   touch-action: none;
