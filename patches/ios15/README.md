@@ -24,8 +24,9 @@ Apply with `git apply --3way` from the repository root, in this order:
    stays LF-only on Windows.
 9. `0009-fix-karaoke-notch-volume-and-slider-drag.patch` — keep the fullscreen
    karaoke page clear of the notch, put its seek bar at the bottom, make the
-   volume bars drive the iOS system volume (`MurielVolumePlugin`), and let every
-   range slider be dragged from anywhere on the bar.
+   volume bars drive the iOS system volume (`MurielVolumePlugin`), let every
+   range slider be dragged from anywhere on (or off) the bar, and keep Word
+   lyrics visible on iOS 15 without `color-mix()`.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:

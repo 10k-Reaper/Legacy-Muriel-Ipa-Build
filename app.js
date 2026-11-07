@@ -12327,9 +12327,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   // On iOS a range input only starts dragging when the finger lands on the knob; touching the track just
   // jumps there. Move the value ourselves for touches anywhere on the bar, so the whole bar drags.
+  // The move/up listeners live on window: an element-only (or captured) drag stops reporting as soon as the
+  // finger leaves the bar, which made the value freeze and left the minimums (0 / 20 / 30) out of reach.
   function enableRangeDragAnywhere(input) {
-    let dragId = null;
-    const isMouse = (e) => e.pointerType === 'mouse';
+    let dragKind = null; // 'touch' | 'pointer'
+    let pointerId = null;
+    let removeWindowListeners = null;
+    const isVolume = () => input.classList.contains('volume-range');
     const valueFromX = (clientX) => {
       const rect = input.getBoundingClientRect();
       if (!rect.width) return null;
@@ -12351,29 +12355,66 @@ document.addEventListener('DOMContentLoaded', async () => {
       input.value = String(value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    const end = (e) => {
-      if (dragId !== e.pointerId) return;
-      dragId = null;
-      try { input.releasePointerCapture(e.pointerId); } catch (err) {}
+    const finish = () => {
+      if (!dragKind) return;
+      dragKind = null;
+      pointerId = null;
+      input.classList.remove('sl-dragging');
+      if (removeWindowListeners) { removeWindowListeners(); removeWindowListeners = null; }
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      if (input.classList.contains('volume-range') && window.MurielSystemVolume && window.MurielSystemVolume.end) window.MurielSystemVolume.end();
+      if (isVolume() && window.MurielSystemVolume && window.MurielSystemVolume.end) window.MurielSystemVolume.end();
     };
+    const onTouchMove = (e) => {
+      if (dragKind !== 'touch') return;
+      const touch = e.touches && e.touches[0];
+      if (!touch) return;
+      e.preventDefault(); // keep the page from scrolling while the bar is being dragged
+      apply(touch.clientX);
+    };
+    const onTouchEnd = () => { if (dragKind === 'touch') finish(); };
+    const onPointerMove = (e) => {
+      if (dragKind !== 'pointer' || e.pointerId !== pointerId) return;
+      e.preventDefault();
+      apply(e.clientX);
+    };
+    const onPointerEnd = (e) => {
+      if (dragKind !== 'pointer' || e.pointerId !== pointerId) return;
+      finish();
+    };
+    const begin = (kind) => {
+      dragKind = kind;
+      input.classList.add('sl-dragging');
+      if (isVolume() && window.MurielSystemVolume && window.MurielSystemVolume.begin) window.MurielSystemVolume.begin();
+      window.addEventListener('touchmove', onTouchMove, { passive: false });
+      window.addEventListener('touchend', onTouchEnd);
+      window.addEventListener('touchcancel', onTouchEnd);
+      window.addEventListener('pointermove', onPointerMove, { passive: false });
+      window.addEventListener('pointerup', onPointerEnd);
+      window.addEventListener('pointercancel', onPointerEnd);
+      removeWindowListeners = () => {
+        window.removeEventListener('touchmove', onTouchMove, { passive: false });
+        window.removeEventListener('touchend', onTouchEnd);
+        window.removeEventListener('touchcancel', onTouchEnd);
+        window.removeEventListener('pointermove', onPointerMove, { passive: false });
+        window.removeEventListener('pointerup', onPointerEnd);
+        window.removeEventListener('pointercancel', onPointerEnd);
+      };
+    };
+    // Touch events are used for fingers (reliable on iOS even when the finger leaves the control) and pointer
+    // events only for a pen. The mouse already drags natively from anywhere, so leave it alone.
+    input.addEventListener('touchstart', (e) => {
+      if (dragKind || e.touches.length !== 1) return;
+      e.preventDefault();
+      begin('touch');
+      apply(e.touches[0].clientX);
+    }, { passive: false });
     input.addEventListener('pointerdown', (e) => {
-      // the mouse already drags natively from anywhere; leave it (and keyboard/assistive input) alone
-      if (isMouse(e) || (e.pointerType && e.pointerType !== 'touch' && e.pointerType !== 'pen')) return;
-      dragId = e.pointerId;
-      try { input.setPointerCapture(e.pointerId); } catch (err) {}
+      if (dragKind || e.pointerType === 'mouse' || e.pointerType === 'touch') return;
       e.preventDefault();
-      if (input.classList.contains('volume-range') && window.MurielSystemVolume && window.MurielSystemVolume.begin) window.MurielSystemVolume.begin();
+      pointerId = e.pointerId;
+      begin('pointer');
       apply(e.clientX);
     });
-    input.addEventListener('pointermove', (e) => {
-      if (dragId !== e.pointerId) return;
-      e.preventDefault();
-      apply(e.clientX);
-    });
-    input.addEventListener('pointerup', end);
-    input.addEventListener('pointercancel', end);
   }
   function enhanceSliders(root) {
     (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {

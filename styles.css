@@ -8535,6 +8535,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
   .volume-range::-webkit-slider-runnable-track, .wavy-track { background: rgba(255, 255, 255, .3); stroke: rgba(255, 255, 255, .3); }
   .cache-progress-track, .update-progress, .sl-inactive { background: rgba(255, 255, 255, .16); }
   .settings-nav-btn:hover, .sp-modes button:hover:not(.active), .tvk-pill-btn:hover { background: rgba(255, 255, 255, .08); }
+  /* the word-by-word gradient fill gets its "unsung" half from a color-mix() fallback; without it the
+     background-image is invalid and the transparent text leaves Word lyrics completely blank */
+  .lyric-line.gradient-line .lyric-fill { --lyric-unsung: var(--md-sys-color-outline); }
 }
 
 /* Settings → Sync (sync.js) */

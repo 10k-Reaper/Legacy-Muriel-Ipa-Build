@@ -125,8 +125,8 @@ These should be confirmed once on macOS or Linux CI before merging to `main`.
 - The iPhone XR / iOS 15.4.1 smoke test passed: playback, lock-screen controls,
   interruption resume, downloads, deep links, and the settings UI.
 - The fullscreen karaoke fixes in patch 9 (notch spacing, bottom seek bar, iOS
-  system volume, drag-anywhere bars) were made after that test, so they still
-  need a fresh CI build and an iPhone check.
+  system volume, drag-anywhere bars, off-bar dragging, Word-lyrics fallback) were
+  made after that test, so they still need a fresh CI build and an iPhone check.
 
 ## Gate for merging
 
@@ -136,8 +136,8 @@ Merge `sync/upstream-2df82f5` into `main` only after:
 2. ~~The artifact reports app minimum `15.0`, widget minimum `16.2`, and binary
    `minos 15.0`.~~ Passed.
 3. ~~An iOS 15 device smoke test passes.~~ Passed on iPhone XR / iOS 15.4.1.
-4. The karaoke follow-up build (patch 9) succeeds on macOS and the three fixes
-   pass on the iPhone.
+4. The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in both
+   patch-9 tables pass on the iPhone.
 5. `npm test` is re-run on a non-Windows environment (or the five failures are
    confirmed as pre-existing environment issues).
 
@@ -153,6 +153,20 @@ test; moving the seek row was part of the layout fix:
 | The karaoke volume bar did not change the music. | iOS ignores `HTMLMediaElement.volume`; `mobile-ui.js` only muted. | `MurielVolumePlugin` (`MPVolumeView` + `AVAudioSession.outputVolume` KVO) moves the system volume and reports hardware-button changes back to the page. |
 | Sliders only dragged by the knob. | iOS starts a range drag only on the thumb. | `enableRangeDragAnywhere()` maps touches anywhere on the enhanced range inputs to values and dispatches `input`/`change`; `touch-action: none` keeps the gesture on the bar. EQ and theme-hue sliders stay excluded. |
 
+A second iPhone pass on that build found four more problems (the first three are
+fixed in the same cumulative patch 9):
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The karaoke seek stopped following the finger as soon as it moved above or below the bar. | `enableRangeDragAnywhere()` listened for `pointermove`/`pointerup` on the input and used `setPointerCapture`; iOS stopped reporting once the touch left the control. | Finger drags now use `touchstart` on the input plus `touchmove`/`touchend`/`touchcancel` on `window`; pen drags use the equivalent pointer events on `window`. The value is clamped to `min`/`max`, so dragging past either end reaches the exact end value. |
+| Settings bars could not reliably reach `0`, `20`, or `30`. | Same input-scoped tracking: the value froze when the finger slid off the bar instead of continuing to the minimum. | Covered by the window-level drag controller above. |
+| "Word" was the default lyrics mode but no words appeared; only "Line" showed text. | The default word style is the gradient fill, whose "unsung" colour is a `color-mix()` fallback. iOS 15.4 has no `color-mix()`, so `background-image` became invalid while the text stayed transparent. | The existing `@supports not (color: color-mix(...))` block in `styles.css` now gives `.lyric-fill` a solid `--lyric-unsung` (`--md-sys-color-outline`), so Word lyrics render on iOS 15. |
+
+The lock-screen elapsed/duration display (`0:01` / `0:00`, full bar, seeking only
+after tapping the bar or pause/play) is the iOS Now Playing behaviour tracked
+upstream in `cloverscripts/riff-muriel#26`; no further change was made in this
+pass and it remains a known limitation.
+
 The native plugin is registered in `capacitorDidLoad`, so `npx cap sync ios` must
-run before the Xcode build. All four changes are covered by
+run before the Xcode build. All of these changes are covered by
 `0009-fix-karaoke-notch-volume-and-slider-drag.patch`.
