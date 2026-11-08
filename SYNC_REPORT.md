@@ -278,9 +278,12 @@ build the app:
 
 | Workflow | Trigger | Output |
 | --- | --- | --- |
-| `release.yml` | `v*` tag or manual version | Versioned GitHub release with `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`, using `.github/release-notes-ios.md` for the notes. |
+| `release.yml` | `ios15-v*` tag or manual version | Versioned GitHub release with `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`, using `.github/release-notes-ios.md` for the notes. |
 | `ios.yml` | push to `main` | Rolling `ios-latest` release with the same three assets. |
 | `build-ios15-ipa.yml` | manual branch build | `Muriel-iOS15-IPA` artifact containing the IPA and checksum. |
+
+Fork releases use the `ios15-v` prefix (for example `ios15-v1.3.10`) so upstream tags
+such as `v1.3.10` cannot trigger the fork's release workflow.
 
 `.github/sidestore-source.js` now accepts `TAG`, `IPA_NAME` and `VERSION`, so the
 SideStore/AltStore source points at the versioned asset instead of assuming

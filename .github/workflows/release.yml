@@ -1,16 +1,17 @@
 name: Release
 
 # Builds the unsigned iOS 15 IPA and attaches it to a versioned GitHub release.
-# Push a v* tag, or run this workflow from the Actions tab with a version; in that
-# case the workflow creates the tag itself.
+# Push an ios15-v* tag (for example ios15-v1.3.10), or run this workflow from the
+# Actions tab with a version; in that case the workflow creates the tag itself.
+# The ios15-v prefix keeps upstream tags such as v1.3.10 from triggering this workflow.
 on:
   push:
     tags:
-      - 'v*'
+      - 'ios15-v*'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. 1.3.10 (the tag becomes v1.3.10)'
+        description: 'Version to release, e.g. 1.3.10 (the tag becomes ios15-v1.3.10)'
         required: true
 
 env:
@@ -41,7 +42,7 @@ jobs:
           cache: npm
 
       - name: Read the release version
-        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        run: echo "VERSION=${TAG#ios15-v}" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
@@ -111,18 +112,18 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; updating its notes."
             gh release edit "$TAG" \
-              --title "Muriel Legacy iOS ${TAG#v}" \
+              --title "Muriel Legacy iOS ${TAG#ios15-v}" \
               --notes-file release-notes-ios.md
           elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "Creating release $TAG for the existing tag."
             gh release create "$TAG" \
-              --title "Muriel Legacy iOS ${TAG#v}" \
+              --title "Muriel Legacy iOS ${TAG#ios15-v}" \
               --notes-file release-notes-ios.md
           else
             echo "Creating tag $TAG and its release."
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
-              --title "Muriel Legacy iOS ${TAG#v}" \
+              --title "Muriel Legacy iOS ${TAG#ios15-v}" \
               --notes-file release-notes-ios.md
           fi
 

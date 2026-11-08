@@ -9,8 +9,8 @@ Users do not need to build the app. The
 [Releases page](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/releases) contains
 ready-to-install builds:
 
-- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one has
-  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
+- **Versioned releases** (`ios15-v1.3.10`, `ios15-v1.3.11`, ...) are the stable builds. Each
+  one has `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
 - **`ios-latest`** is a rolling pre-release that follows `main` between versioned builds.
 
 The IPA is unsigned and supports iOS 15.0 and later. It can be installed with:
@@ -84,8 +84,8 @@ Three workflows produce the same unsigned IPA:
   `Muriel-iOS15.ipa` as the `Muriel-iOS15-IPA` artifact.
 - `.github/workflows/ios.yml` builds on every push to `main` and publishes the rolling
   `ios-latest` release (`Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`).
-- `.github/workflows/release.yml` builds when a `v*` tag is pushed (or when started
-  manually with a version) and publishes `Muriel.ipa`, `Muriel.ipa.sha256` and
+- `.github/workflows/release.yml` builds when an `ios15-v*` tag is pushed (or when
+  started manually with a version) and publishes `Muriel.ipa`, `Muriel.ipa.sha256` and
   `sidestore.json` to that versioned release.
 
 Every workflow runs the same checks:
@@ -106,17 +106,21 @@ publish an iOS 16.2-only build.
 
 1. Set the release version in `package.json` (for example `1.3.10`) and merge the branch
    into `main` after the build and device checks pass.
-2. Create and push the matching tag:
+2. Create and push the matching fork tag:
 
    ```bash
-   git tag v1.3.10
-   git push origin v1.3.10
+   git tag ios15-v1.3.10
+   git push origin ios15-v1.3.10
    ```
 
 3. The **Release** workflow builds the IPA for that tag and attaches `Muriel.ipa`,
-   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release. Its release notes
-   come from `.github/release-notes-ios.md`, with `__VERSION__` replaced by the tag
+   `Muriel.ipa.sha256` and `sidestore.json` to the `ios15-v1.3.10` release. Its release
+   notes come from `.github/release-notes-ios.md`, with `__VERSION__` replaced by the tag
    version.
+
+Use the `ios15-v` prefix rather than plain `v1.3.10`. Upstream Muriel already has a
+`v1.3.10` tag, and an upstream tag must not trigger this fork's release workflow. Push only
+the fork tag; do not run `git push --tags`.
 
 The same workflow can be started from the Actions tab with a version instead of pushing a
 tag; it creates the tag itself.

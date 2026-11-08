@@ -14,8 +14,8 @@ Ready-to-install IPAs are published under
 [**Releases**](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/releases), so you do
 not need a Mac, Xcode or a GitHub account to use the app.
 
-- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one
-  contains `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
+- **Versioned releases** (`ios15-v1.3.10`, `ios15-v1.3.11`, ...) are the stable builds. Each
+  one contains `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
 - **`ios-latest`** is a rolling pre-release that follows the `main` branch.
 - All builds are unsigned and support **iOS 15.0 or later**.
 
@@ -74,8 +74,11 @@ The download builds are produced by GitHub Actions on macOS:
 - [`.github/workflows/ios.yml`](.github/workflows/ios.yml) publishes the rolling
   `ios-latest` release from `main`.
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) builds a versioned
-  release when a `v*` tag is pushed (or started manually with a version) and uploads
-  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
+  release when an `ios15-v*` tag is pushed (or started manually with a version) and
+  uploads `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
+
+The `ios15-v` tag prefix keeps the fork's releases separate from upstream Muriel's `v*`
+tags, so an upstream tag cannot accidentally trigger this workflow.
 
 Every path verifies that the app reports minimum iOS `15.0`, the widget extension reports
 `16.2`, and the app binary's `LC_BUILD_VERSION minos` is `15.0` before publishing. The IPA

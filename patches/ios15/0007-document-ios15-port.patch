@@ -1,9 +1,9 @@
 diff --git a/LEGACY_IOS.md b/LEGACY_IOS.md
 new file mode 100644
-index 0000000..4ae53ae
+index 0000000..c648190
 --- /dev/null
 +++ b/LEGACY_IOS.md
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,171 @@
 +# iOS 15 compatibility port
 +
 +This repository keeps Muriel playable on **iOS 15.0+** while tracking the upstream
@@ -15,8 +15,8 @@ index 0000000..4ae53ae
 +[Releases page](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/releases) contains
 +ready-to-install builds:
 +
-+- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one has
-+  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++- **Versioned releases** (`ios15-v1.3.10`, `ios15-v1.3.11`, ...) are the stable builds. Each
++  one has `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
 +- **`ios-latest`** is a rolling pre-release that follows `main` between versioned builds.
 +
 +The IPA is unsigned and supports iOS 15.0 and later. It can be installed with:
@@ -90,8 +90,8 @@ index 0000000..4ae53ae
 +  `Muriel-iOS15.ipa` as the `Muriel-iOS15-IPA` artifact.
 +- `.github/workflows/ios.yml` builds on every push to `main` and publishes the rolling
 +  `ios-latest` release (`Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`).
-+- `.github/workflows/release.yml` builds when a `v*` tag is pushed (or when started
-+  manually with a version) and publishes `Muriel.ipa`, `Muriel.ipa.sha256` and
++- `.github/workflows/release.yml` builds when an `ios15-v*` tag is pushed (or when
++  started manually with a version) and publishes `Muriel.ipa`, `Muriel.ipa.sha256` and
 +  `sidestore.json` to that versioned release.
 +
 +Every workflow runs the same checks:
@@ -112,17 +112,21 @@ index 0000000..4ae53ae
 +
 +1. Set the release version in `package.json` (for example `1.3.10`) and merge the branch
 +   into `main` after the build and device checks pass.
-+2. Create and push the matching tag:
++2. Create and push the matching fork tag:
 +
 +   ```bash
-+   git tag v1.3.10
-+   git push origin v1.3.10
++   git tag ios15-v1.3.10
++   git push origin ios15-v1.3.10
 +   ```
 +
 +3. The **Release** workflow builds the IPA for that tag and attaches `Muriel.ipa`,
-+   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release. Its release notes
-+   come from `.github/release-notes-ios.md`, with `__VERSION__` replaced by the tag
++   `Muriel.ipa.sha256` and `sidestore.json` to the `ios15-v1.3.10` release. Its release
++   notes come from `.github/release-notes-ios.md`, with `__VERSION__` replaced by the tag
 +   version.
++
++Use the `ios15-v` prefix rather than plain `v1.3.10`. Upstream Muriel already has a
++`v1.3.10` tag, and an upstream tag must not trigger this fork's release workflow. Push only
++the fork tag; do not run `git push --tags`.
 +
 +The same workflow can be started from the Actions tab with a version instead of pushing a
 +tag; it creates the tag itself.
@@ -172,10 +176,10 @@ index 0000000..4ae53ae
 +- Device testing on iOS 15.0-15.3: background audio, lock-screen controls, interruption
 +  resume, downloads, deep links, and settings layout around `:has()` rules.
 diff --git a/README.md b/README.md
-index d34b6ef..bcf9a54 100644
+index d34b6ef..992f2fb 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,55 +1,156 @@
+@@ -1,55 +1,159 @@
 -# Muriel
 +# Muriel Legacy iOS
  
@@ -206,8 +210,8 @@ index d34b6ef..bcf9a54 100644
 -- **Compact layout** — slim navigation rail, slide-over drawer for now playing, lyrics and the queue
 -- **Custom background** — image, GIF or video, with optional glass blur on the interface; pauses while Muriel is hidden
 -- **Performance settings** — lightweight thumbnails, blur on/off, visualizer frame-rate cap, memory trimming in the background, hardware acceleration toggle
-+- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one
-+  contains `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++- **Versioned releases** (`ios15-v1.3.10`, `ios15-v1.3.11`, ...) are the stable builds. Each
++  one contains `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
 +- **`ios-latest`** is a rolling pre-release that follows the `main` branch.
 +- All builds are unsigned and support **iOS 15.0 or later**.
  
@@ -232,17 +236,12 @@ index d34b6ef..bcf9a54 100644
 +Apple ID and does not expire.
 +
 +To check a download, compare it with the published checksum:
- 
- ```bash
--git clone https://github.com/cloverscripts/riff-muriel.git
--cd riff-muriel
--npm install
--npm start
++
++```bash
 +shasum -a 256 Muriel.ipa                 # macOS / Linux
 +certutil -hashfile Muriel.ipa SHA256     # Windows
- ```
- 
--## Building
++```
++
 +The current build has been device-tested on an **iPhone XR running iOS 15.4.1**. See
 +[`SYNC_REPORT.md`](SYNC_REPORT.md) for the build and device-test history.
 +
@@ -273,8 +272,11 @@ index d34b6ef..bcf9a54 100644
 +- [`.github/workflows/ios.yml`](.github/workflows/ios.yml) publishes the rolling
 +  `ios-latest` release from `main`.
 +- [`.github/workflows/release.yml`](.github/workflows/release.yml) builds a versioned
-+  release when a `v*` tag is pushed (or started manually with a version) and uploads
-+  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++  release when an `ios15-v*` tag is pushed (or started manually with a version) and
++  uploads `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++
++The `ios15-v` tag prefix keeps the fork's releases separate from upstream Muriel's `v*`
++tags, so an upstream tag cannot accidentally trigger this workflow.
 +
 +Every path verifies that the app reports minimum iOS `15.0`, the widget extension reports
 +`16.2`, and the app binary's `LC_BUILD_VERSION minos` is `15.0` before publishing. The IPA
@@ -286,21 +288,26 @@ index d34b6ef..bcf9a54 100644
 +Requires Node.js 18 or newer. Building the IPA additionally requires macOS with Xcode.
  
  ```bash
--npm run dist
+-git clone https://github.com/cloverscripts/riff-muriel.git
+-cd riff-muriel
+-npm install
+-npm start
 +npm ci
 +npm run check:ios15
 +node mobile/build.mjs
 +npm test
  ```
  
--Installers land in `dist/`. Builds are unsigned: on macOS, right-click Muriel in Applications and choose Open; if macOS says the app is damaged, run `xattr -cr /Applications/Muriel.app`.
+-## Building
 +For the native app:
-+
-+```bash
+ 
+ ```bash
+-npm run dist
 +npx cap sync ios
 +npx cap open ios      # or build with xcodebuild
-+```
-+
+ ```
+ 
+-Installers land in `dist/`. Builds are unsigned: on macOS, right-click Muriel in Applications and choose Open; if macOS says the app is damaged, run `xattr -cr /Applications/Muriel.app`.
 +The desktop app is unaffected by the iOS port: `npm start` runs it and `npm run dist`
 +builds installers. Upstream publishes the desktop downloads. The static compatibility
 +gate, web bundle and Node test suite also run on Windows and Linux. The five test failures
