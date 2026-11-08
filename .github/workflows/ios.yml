@@ -33,11 +33,17 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Check iOS 15 compatibility (source)
+        run: node tools/check-ios15-compat.mjs
+
       - name: Build the web bundle
         run: node mobile/build.mjs
 
       - name: Sync into the Xcode project
         run: npx cap sync ios
+
+      - name: Check iOS 15 compatibility (after sync)
+        run: node tools/check-ios15-compat.mjs
 
       - name: Compile (unsigned)
         run: |
@@ -52,6 +58,18 @@ jobs:
             MARKETING_VERSION="$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')").${{ github.run_number }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             build
+
+      - name: Confirm app is iOS 15 and widget is iOS 16.2
+        run: |
+          app="build/Build/Products/Release-iphoneos/App.app"
+          app_min=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist")
+          widget_min=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/PlugIns/MurielWidgets.appex/Info.plist")
+          minos=$(otool -l "$app/App" | awk '/minos/{print $2; exit}')
+          test "$app_min" = "15.0"
+          test "$minos" = "15.0"
+          test "$widget_min" = "16.2"
+          echo "App minimum: $app_min (LC_BUILD_VERSION minos $minos)"
+          echo "Widget minimum: $widget_min"
 
       - name: Package Muriel.ipa
         run: |

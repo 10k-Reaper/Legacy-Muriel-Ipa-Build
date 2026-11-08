@@ -34,7 +34,8 @@ if (process.platform === 'linux') {
 }
 
 if (process.platform === 'win32') {
-  enabledFeatures.push('HardwareMediaKeyHandling');
+  // MediaSessionService: Chromium's own media session, so the Windows media overlay and lock screen show Muriel
+  enabledFeatures.push('HardwareMediaKeyHandling', 'MediaSessionService');
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
 
@@ -76,6 +77,25 @@ if (process.env.MURIEL_DEBUG === '1') {
   });
 }
 
+// MURIEL_METRICS=1: one JSON line per interval with each Chromium process's CPU and memory, for measuring
+if (process.env.MURIEL_METRICS === '1') {
+  app.whenReady().then(() => {
+    const every = Math.max(1000, parseInt(process.env.MURIEL_METRICS_MS || '5000', 10) || 5000);
+    setInterval(() => {
+      const procs = app.getAppMetrics().map((m) => ({
+        pid: m.pid,
+        type: m.type + (m.serviceName ? ':' + m.serviceName : ''),
+        cpu: Math.round(m.cpu.percentCPUUsage * 10) / 10,
+        ws: m.memory.workingSetSize || 0, // KB
+        priv: m.memory.privateBytes || 0, // KB, Windows only
+      }));
+      const mu = process.memoryUsage();
+      const main = { heapMB: Math.round(mu.heapUsed / 1048576), heapTotalMB: Math.round(mu.heapTotal / 1048576), extMB: Math.round(mu.external / 1048576), rssMB: Math.round(mu.rss / 1048576) };
+      console.log('[metrics] ' + JSON.stringify({ t: Date.now(), main, procs }));
+    }, every).unref();
+  });
+}
+
 if (process.argv.includes('lyrics') || process.argv.includes('--lyrics')) {
   const cliPath = path.join(__dirname, 'cli.js');
   const child = spawn(process.execPath, [cliPath, 'lyrics'], { stdio: 'inherit', env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }) });
@@ -88,6 +108,8 @@ function runGUI() {
   const { startServer, PORT, getServerToken } = require('./server');
 
   let mainWindow = null;
+  // Must match build.appId so the NSIS shortcut, pinned icons and the running window share one taskbar identity.
+  if (process.platform === 'win32') app.setAppUserModelId('io.github.cloverscripts.muriel');
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) { app.quit(); return; }
   app.on('second-instance', () => {
@@ -195,7 +217,6 @@ function runGUI() {
     const primaryDisplay = screen.getPrimaryDisplay();
     const scaleFactor = primaryDisplay.scaleFactor;
 
-    app.setAppUserModelId('io.github.rootscripts.riff');
     mainWindow = new BrowserWindow({
       x: initialBounds.x,
       y: initialBounds.y,
@@ -206,8 +227,11 @@ function runGUI() {
                                    backgroundColor: firstRun ? '#8d5ef2' : '#000000',
                                    title: 'Muriel',
                                    icon: path.join(__dirname, 'assets', 'icon.png'),
-                                   frame: false,
-                                   titleBarStyle: 'hidden',
+                                   // macOS keeps its frame so the native traffic lights, rounded corners and shadow are
+                                   // used; Windows and Linux draw their own controls
+                                   ...(process.platform === 'darwin'
+                                     ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 13 } }
+                                     : { frame: false, titleBarStyle: 'hidden' }),
                                    show: false,
                                    useContentSize: true,
                                    webPreferences: {
@@ -217,7 +241,9 @@ function runGUI() {
                                    contextIsolation: true,
                                    webSecurity: false,
                                    backgroundThrottling: true,
-                                   spellcheck: false
+                                   spellcheck: false,
+                                   // songs start from a lookup that finishes after the click's user activation is gone (#17)
+                                   autoplayPolicy: 'no-user-gesture-required'
                                    }
     });
 
@@ -319,6 +345,12 @@ function runGUI() {
 
     ipcMain.on('window-close', () => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    });
+
+    // macOS: the traffic lights hide with the titlebar (mini player, or "Hide titlebar" until it slides down)
+    ipcMain.on('set-window-buttons-visible', (e, visible) => {
+      if (process.platform !== 'darwin' || !mainWindow || mainWindow.isDestroyed()) return;
+      try { mainWindow.setWindowButtonVisibility(!!visible); } catch (_) {}
     });
 
     // Spotify's login page and Last.fm's approval page (lastfm.js)
@@ -458,12 +490,34 @@ function runGUI() {
         return r.canceled ? null : pathToFileURL(r.filePaths[0]).href;
       });
 
-      ipcMain.handle('import-audio-files', async () => {
-        const r = await dialog.showOpenDialog(mainWindow, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Audio', extensions: ['mp3','wav','flac','opus','ogg','oga','m4a','aac','webm','weba'] }] });
+      const AUDIO_EXTS = ['mp3','wav','flac','opus','ogg','oga','m4a','aac','webm','weba'];
+      // the audio files in a picked folder and its subfolders (a few levels, at most 1000 files)
+      async function audioFilesIn(dir, out, depth = 0) {
+        let entries = [];
+        try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+        for (const entry of entries) {
+          if (out.length >= 1000 || entry.name.startsWith('.')) continue;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) { if (depth < 4) await audioFilesIn(full, out, depth + 1); }
+          else if (entry.isFile() && AUDIO_EXTS.includes(path.extname(entry.name).slice(1).toLowerCase())) out.push(full);
+        }
+      }
+
+      // opts.folder: pick folders instead of files (from Riff 43.1); the files are copied into the library either way
+      ipcMain.handle('import-audio-files', async (e, opts) => {
+        const folder = !!(opts && opts.folder);
+        const r = await dialog.showOpenDialog(mainWindow, folder
+          ? { properties: ['openDirectory', 'multiSelections'] }
+          : { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Audio', extensions: AUDIO_EXTS }] });
         if (r.canceled) return [];
+        let sources = r.filePaths;
+        if (folder) {
+          sources = [];
+          for (const dir of r.filePaths) await audioFilesIn(dir, sources);
+        }
         fs.mkdirSync(LIBRARY_DIR, { recursive: true });
         const out = [];
-        for (const src of r.filePaths) {
+        for (const src of sources) {
           const st = fs.statSync(src), ext = path.extname(src).slice(1).toLowerCase();
           const id = 'local_' + crypto.createHash('sha1').update(path.basename(src) + st.size).digest('hex').slice(0, 12);
           const file = `${id}.${ext}`;
@@ -605,7 +659,9 @@ function runGUI() {
       ipcMain.on('set-hw-accel', (e, value) => { writeStartupConfig({ hwAccel: !!value }); });
 
       const MEDIA_KEYS = { MediaPlayPause: 'toggle', MediaNextTrack: 'next', MediaPreviousTrack: 'prev', MediaStop: 'stop' };
-      let mediaKeysWanted = true;
+      // off unless turned on in Settings: global shortcuts take the keys away from Chromium's media session, and
+      // with them the Windows overlay and lock screen controls (from Riff 43.1)
+      let mediaKeysWanted = false;
       let mediaKeysActive = false;
       const sendMedia = (cmd) => {
         if (process.env.MURIEL_DEBUG === '1') console.log('[media] globalShortcut', cmd);
@@ -733,6 +789,12 @@ function runGUI() {
         setupTray();
         createWindow();
         app.on('activate', () => {
+          // the Dock icon brings back a window that was closed to the tray
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (!mainWindow.isVisible()) mainWindow.show();
+            mainWindow.focus();
+            return;
+          }
           if (BrowserWindow.getAllWindows().length === 0) createWindow();
         });
       });

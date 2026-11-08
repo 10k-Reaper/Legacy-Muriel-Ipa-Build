@@ -23,6 +23,32 @@
   } catch (e) {}
 })();
 
+// CanvasRenderingContext2D.roundRect only reached Safari in 16.4. On iOS 15 every visualizer frame threw
+// "miniCtx.roundRect is not a function" (the bar and karaoke canvases stayed blank), so provide the same
+// path here. Radii are always a number in this app; arrays are handled for safety.
+(() => {
+  try {
+    const proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+    if (!proto || typeof proto.roundRect === 'function') return;
+    proto.roundRect = function (x, y, w, h, radii) {
+      let r = Array.isArray(radii) ? radii[0] : radii;
+      r = typeof r === 'number' && isFinite(r) ? r : 0;
+      const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+      this.moveTo(x + rr, y);
+      this.lineTo(x + w - rr, y);
+      this.quadraticCurveTo(x + w, y, x + w, y + rr);
+      this.lineTo(x + w, y + h - rr);
+      this.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+      this.lineTo(x + rr, y + h);
+      this.quadraticCurveTo(x, y + h, x, y + h - rr);
+      this.lineTo(x, y + rr);
+      this.quadraticCurveTo(x, y, x + rr, y);
+      this.closePath();
+      return this;
+    };
+  } catch (e) {}
+})();
+
 // localStorage (~5 MB) holds favorites, playlists, history, the queue and Encore. When it was full, every
 // setItem threw: a song tap failed before the stream was even requested and new favorites vanished on restart.
 // Free what can be rebuilt (the phone debug log, old Encore days) and retry; if it still doesn't fit, report
@@ -119,7 +145,7 @@
 document.addEventListener('DOMContentLoaded', async () => {
   try { localStorage.removeItem('muriel_stats'); } catch (e) {}
 
-  const THUMB_FALLBACK = "if(this.dataset.full&&this.src!==this.dataset.full){this.src=this.dataset.full}else{this.style.visibility='hidden'}";
+  const THUMB_FALLBACK = "if(window.murielArtNext){window.murielArtNext(this)}else if(this.dataset.full&&this.src!==this.dataset.full){this.src=this.dataset.full}else{this.style.visibility='hidden'}";
 
   function escapeHtml(value) {
     return String(value == null ? '' : value)
@@ -230,7 +256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'Added {0} tracks to "{1}"', 'Playlist deleted', 'Link copied{0}', 'Removed from library', 'Could not play this song. Try again or skip.',
     'Offline: connect to the internet to search new tracks', 'No matching tracks. Try a different search', 'Search for "{0}"', 'Actions',
     'Playlists', 'Favorites', 'In playlists', 'Queue', 'History', 'Library', 'Online', 'Discover', 'View', 'Audio', 'Your stats',
-    'Repeat: playlist', 'Repeat: this song', 'Sleep timer: {0} min', 'Sleep timer: end of track']);
+    'Repeat: playlist', 'Repeat: this song', 'Start radio', 'Radio · {0}', 'Radio · {0} and {1} more', 'Sleep timer: {0} min', 'Sleep timer: end of track']);
 
   const toastQueue = [];
   const MAX_QUEUED_TOASTS = 10;
@@ -656,21 +682,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!('mediaSession' in navigator) || typeof navigator.mediaSession.setPositionState !== 'function') return;
     try {
       const audio = (state.secondaryAudio && !state.secondaryAudio.paused) ? state.secondaryAudio : el.nativeAudio;
-      let duration = (audio && Number.isFinite(audio.duration) && audio.duration > 0)
-        ? audio.duration
-        : (state.currentTrack && Number.isFinite(state.currentTrack.duration) && state.currentTrack.duration > 0 ? state.currentTrack.duration : 0);
-      let position = (audio && Number.isFinite(audio.currentTime) && audio.currentTime >= 0) ? audio.currentTime : 0;
-      let playbackRate = (audio && Number.isFinite(audio.playbackRate) && audio.playbackRate > 0) ? audio.playbackRate : 1.0;
-      if (duration > 0) {
-        if (position > duration) position = duration;
-        navigator.mediaSession.setPositionState({
-          duration,
-          playbackRate,
-          position
-        });
-      } else {
-        navigator.mediaSession.setPositionState();
-      }
+      const pos = window.MurielNowPlaying.positionState(audio, state.currentTrack && state.currentTrack.duration);
+      if (pos) navigator.mediaSession.setPositionState(pos);
+      else navigator.mediaSession.setPositionState();
     } catch (_) {}
   }
 
@@ -833,8 +847,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     localStorage.setItem(`muriel_adv_${name}`, boolVal ? 'true' : 'false');
   }
 
+  // off or on as chosen in Settings; never chosen: the system's "Reduce motion" (from Riff 43.2)
+  function systemPrefersReducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+  }
+
   function applyReducedMotionSetting() {
-    const reduced = getAdv('reduce_motion', false);
+    const reduced = getAdv('reduce_motion', systemPrefersReducedMotion());
     document.documentElement.classList.toggle('force-reduced-motion', reduced);
   }
 
@@ -1100,6 +1119,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const coverAnalysisCache = new Map();
+  // drop the oldest entries of an in-memory cache past n, so long sessions don't grow without end
+  function capMap(m, n) { while (m.size > n) m.delete(m.keys().next().value); }
 
   function analyzeCover(imgSrc) {
     return new Promise((resolve) => {
@@ -1531,7 +1552,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (el.themeSwatches) {
       el.themeSwatches.forEach(sw => sw.classList.toggle('active', !!(state.themeAccent && sw.dataset.color && sw.dataset.color.toLowerCase() === state.themeAccent.toLowerCase())));
     }
-    if (el.customColorInput) el.customColorInput.value = hexColor;
+    // not while the picker is open: that reset the picker under the pointer
+    if (el.customColorInput && document.activeElement !== el.customColorInput) el.customColorInput.value = hexColor;
 
     const rgb = hexToRgb(hexColor);
     const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
@@ -1727,6 +1749,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                           tvKaraokeClose: document.getElementById('btn-close-tv-karaoke'),
                           tvKaraokeTitle: document.getElementById('tv-karaoke-title'),
                           tvKaraokeArtist: document.getElementById('tv-karaoke-artist'),
+                          btnTvkFav: document.getElementById('btn-tvk-fav'),
+                          tvkFavIcon: document.getElementById('tvk-fav-icon'),
+                          btnTvkShuffle: document.getElementById('btn-tvk-shuffle'),
+                          btnTvkRepeat: document.getElementById('btn-tvk-repeat'),
+                          tvkVolumeSlider: document.getElementById('tvk-volume-slider'),
 
                           playbar: document.getElementById('playbar'),
                           playbarArtwork: document.getElementById('playbar-artwork'),
@@ -2148,6 +2175,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       hold.moved = true;
       if (!hold.fired) end();
     };
+    // iOS can start a scroll without delivering pointermove, so the hold also watches touchmove: a moving
+    // finger is scrolling the list, never a hold for the song menu
+    const touchMove = (e) => {
+      if (!hold) return;
+      const t = e.touches && e.touches[0];
+      if (!t || Math.hypot(t.clientX - hold.x, t.clientY - hold.y) <= 8) return;
+      hold.moved = true;
+      end();
+    };
+    document.addEventListener('touchmove', touchMove, { passive: true, capture: true });
     const up = (e) => {
       if (!hold || e.pointerId !== hold.id) return;
       const h = hold; end();
@@ -2238,6 +2275,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const audioEngine = new window.MurielAudioEngine();
   window.audioEngine = audioEngine;
+  // Paused on a phone with the app in the background, the context is left running: a resume() there may not
+  // settle until the app is opened again, so play from the lock screen or the notification stayed silent (#24)
+  audioEngine.keepRunning = () => !!(document.hidden && window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   let hlsInstance = null;
   animationFrameId = null;
 
@@ -2246,6 +2286,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   function resetLevelWatcher() { levelAvgDb = -120; if (audioEngine && audioEngine.setNormalizeGainDb) audioEngine.setNormalizeGainDb(0); }
   // the phone app has no Web Audio graph (see mobile-ui.js), so nothing to measure there
   const isPhoneApp = document.documentElement.classList.contains('is-mobile');
+  // when to look up the next song: phones download it whole, so halfway through; the computer only needs
+  // a stream URL (a few seconds of yt-dlp), so in the last 45 seconds (#16)
+  function nextPrefetchDue(cur, dur) {
+    if (!(dur > 0) || !(cur >= 0)) return false;
+    // the computer looks the next song up once this one has played 10 s (a quick skip costs nothing), so
+    // it starts at once (Riff 44); phones download whole songs, so they wait until halfway
+    return isPhoneApp ? cur / dur > 0.5 : cur >= 10 || dur - cur <= 45;
+  }
   window.addEventListener('muriel:storage-full', () => showToast(Tm('Storage is full: some changes could not be saved'), 'error'));
   // <audio>/<img> can't send the token header the fetch wrapper adds, so local-server media URLs carry it
   const tokenUrl = (u) => {
@@ -2515,7 +2563,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function isVizConnectedMode() { return vizConnected; }
   let barBgSmoothed = null;
   let barBgW = 0;
-  const BAR_BG_H = 36;
+  let BAR_BG_H = 88;
   let barBgSettings = null;
   let barBgSettingsAt = 0;
   function drawConnectedLiquidWave(ctx, w, h, heights, color) {
@@ -2570,13 +2618,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const { smooth, sens } = barBgSettings;
     const half = 26;
     const minH = 3;
+    // a quiet backdrop: the bars stay in the lower part of the bar, under the time labels and seek bar
+    const capH = Math.round(h * 0.42);
     if (!barBgSmoothed) barBgSmoothed = new Float32Array(half).fill(minH);
     let any = false;
     for (let i = 0; i < half; i++) {
       let target = minH;
       if (state.isPlaying) {
         const raw = (((data[i * 2] || 0) + (data[Math.min(data.length - 1, i * 2 + 1)] || 0)) * 0.5) * sens;
-        target = minH + Math.pow(Math.min(1, Math.max(0, raw / 255)), 1.25) * (h - 6);
+        target = minH + Math.pow(Math.min(1, Math.max(0, raw / 255)), 1.25) * (capH - minH);
       }
       barBgSmoothed[i] = barBgSmoothed[i] * smooth + target * (1 - smooth);
       if (barBgSmoothed[i] > minH + 0.5) any = true;
@@ -2587,14 +2637,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sym = new Float32Array(count);
     for (let i = 0; i < half; i++) { sym[half - 1 - i] = barBgSmoothed[i]; sym[half + i] = barBgSmoothed[i]; }
     if (!cachedPrimaryColor) refreshCachedThemeColors();
-    const color = cachedPrimaryColor || '#ffffff';
+    const base = cachedPrimaryColor || '#ffffff';
+    // fade out toward the top so the tallest bars melt away before they reach the controls
+    const color = ctx.createLinearGradient(0, h, 0, h - capH);
+    color.addColorStop(0, base);
+    color.addColorStop(1, 'transparent');
     if (vizConnected) { drawConnectedLiquidWave(ctx, w, h, sym, color); return; }
     const gap = 2;
     const barW = Math.max(2, (w - gap * (count - 1)) / count);
     const startX = Math.max(0, (w - (count * barW + gap * (count - 1))) / 2);
     ctx.fillStyle = color;
     for (let i = 0; i < count; i++) {
-      const barH = Math.max(2, Math.min(h - 2, sym[i]));
+      const barH = Math.max(2, Math.min(capH, sym[i]));
       ctx.beginPath();
       ctx.roundRect(startX + i * (barW + gap), h - barH, barW, barH, 3);
       ctx.fill();
@@ -2612,12 +2666,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         el.scrubberTrack.appendChild(scrubberCanvas);
       }
       const rect = el.scrubberTrack.getBoundingClientRect();
-      cachedTrackWidth = rect.width;
+      // measured while the playbar is still hidden the width is 0, which left a 0px canvas behind
+      const rw = rect.width || el.scrubberTrack.clientWidth || 300;
+      cachedTrackWidth = rw;
       cachedTrackHeight = Math.max(40, rect.height);
       hasDrawnPausedFrame = false;
-      scrubberCanvas.width = rect.width * dpr;
-      scrubberCanvas.height = Math.max(40, rect.height) * dpr;
-      scrubberCanvas.style.width = `${rect.width}px`;
+      scrubberCanvas.width = Math.round(rw * dpr);
+      scrubberCanvas.height = Math.round(Math.max(40, rect.height) * dpr);
+      scrubberCanvas.style.width = '100%';
       scrubberCanvas.style.height = `${Math.max(40, rect.height)}px`;
       const ctx = scrubberCanvas.getContext('2d');
       ctx.resetTransform();
@@ -2634,7 +2690,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const tvkCanvas = document.getElementById('tvk-visualizer-canvas');
     if (tvkCanvas) {
-      const cssW = Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
+      // with lyrics the phone shows the wave as a full-width band at the bottom of the karaoke page;
+      // tracks without lyrics keep the exact centred band they had
+      const tvRoot = document.getElementById('tv-karaoke');
+      const showsLyrics = !tvRoot || !tvRoot.classList.contains('tv-nolyrics');
+      const cssW = isPhoneApp && showsLyrics
+        ? Math.max(280, Math.round(window.innerWidth))
+        : Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
       const cssH = Math.min(84, Math.max(52, Math.round(window.innerHeight * 0.085)));
       cachedTvkWidth = cssW;
       cachedTvkHeight = cssH;
@@ -2650,7 +2712,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const barBgCanvas = document.getElementById('playbar-bg-visualizer');
     if (barBgCanvas && el.playbar && !isPhoneApp) {
-      barBgW = Math.max(200, el.playbar.clientWidth - 32);
+      // the canvas covers the whole player bar (see .playbar-bg-visualizer)
+      barBgW = Math.max(200, el.playbar.clientWidth);
+      BAR_BG_H = Math.max(40, el.playbar.clientHeight || 88);
       barBgCanvas.width = Math.round(barBgW * dpr);
       barBgCanvas.height = Math.round(BAR_BG_H * dpr);
       const bctx = barBgCanvas.getContext('2d');
@@ -2911,7 +2975,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const d = formatDuration(dur);
             if (el.timeDuration.textContent !== d) el.timeDuration.textContent = d;
           }
-          if (dur > 0 && cur / dur > 0.5 && !state.nextTrackPrefetched) {
+          if (nextPrefetchDue(cur, dur) && !state.nextTrackPrefetched) {
             state.nextTrackPrefetched = true;
             prefetchNextQueueTrack();
           }
@@ -2927,10 +2991,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         scrubProgress += (targetProgress - scrubProgress) * Math.min(1, dt * followSpeed);
 
         const targetAnim = isDraggingScrubber ? 1 : 0;
-        scrubKnobAnim += (targetAnim - scrubKnobAnim) * Math.min(1, dt * 16);
+        scrubKnobAnim += (targetAnim - scrubKnobAnim) * Math.min(1, Math.max(0, dt * 16));
+        // a NaN here sticks for good and roundRect throws on a negative radius
+        scrubKnobAnim = Math.max(0, Math.min(1, Number.isFinite(scrubKnobAnim) ? scrubKnobAnim : 0));
         const curKnobW = 7.5 + (9.0 - 7.5) * scrubKnobAnim;
         const curKnobH = 24 + (32 - 24) * scrubKnobAnim;
-        const curKnobR = 3.75 + (4.5 - 3.75) * scrubKnobAnim;
+        const curKnobR = Math.max(0, 3.75 + (4.5 - 3.75) * scrubKnobAnim);
 
         const padLeft = 5.5;
         const padRight = 5.5;
@@ -3052,6 +3118,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.body.classList.remove('app-paused');
       document.body.classList.remove('hidden-window');
       resizeCanvases();
+      // the daily mixes wait while the window is hidden (#16): make them now if they're still missing
+      try { if (spHomeReady && isSpotifyHome() && !readDailyMixes()) renderMadeForYou(); } catch (e) {}
       hasDrawnPausedFrame = false;
       if (state.isPlaying || isDraggingScrubber) startVisualizers();
       if (typeof cacheModal !== 'undefined' && cacheModal && cacheModal.classList.contains('visible') && typeof cacheRafId !== 'undefined' && !cacheRafId) {
@@ -3217,7 +3285,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const FADE_IMG_SEL = '.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img';
-  const markImgLoaded = (e) => { const t = e.target; if (t.tagName === 'IMG' && t.matches(FADE_IMG_SEL)) t.classList.add('is-loaded'); };
+  // The queue and the long lists rebuild their rows while scrolling. Every new <img> starts at opacity 0 and
+  // fades in on its load event, so a cover that was already on screen faded again on every re-render and the
+  // list flashed. Remember which covers have loaded once and start those rows visible.
+  const loadedImgSrcs = new Set();
+  const markImgLoaded = (e) => {
+    const t = e.target;
+    if (t.tagName !== 'IMG' || !t.matches(FADE_IMG_SEL)) return;
+    t.classList.add('is-loaded');
+    const src = t.currentSrc || t.src;
+    if (src) loadedImgSrcs.add(src);
+  };
+  const markCachedThumbsLoaded = (root) => {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('img.track-row-thumb').forEach((img) => {
+      const src = img.currentSrc || img.src;
+      if (img.complete || (src && loadedImgSrcs.has(src))) img.classList.add('is-loaded');
+    });
+  };
   document.addEventListener('load', markImgLoaded, true);
   document.addEventListener('error', markImgLoaded, true);
 
@@ -3247,6 +3332,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (thumb) {
       if (el.playbarArtwork) {
         el.playbarArtwork.onload = () => {
+          // a fallback that loaded replaces the song's dead cover for good
+          const shown = el.playbarArtwork.getAttribute('src') || '';
+          if (el.playbarArtwork.__artTrack === track && shown !== thumb) rememberTrackArt(getTrackCanonicalId(track), shown);
           if (state.currentTrack && 'mediaSession' in navigator && navigator.mediaSession.metadata) {
             const curThumb = (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(state.currentTrack) : '') || state.currentTrack.thumbnail || '';
             const art = getMediaArtwork(curThumb);
@@ -3258,13 +3346,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         swapArtwork(el.playbarArtwork, thumb);
         if (typeof m3cSetImage === 'function') m3cSetImage(thumb);
         el.playbarArtwork.onerror = () => {
-          if (state.currentTrack && getTrackArt(state.currentTrack).cover) {
-            setTrackArt(state.currentTrack, { cover: undefined });
-            const defThumb = state.currentTrack.thumbnail || '';
-            el.playbarArtwork.src = defThumb;
-            if (typeof m3cSetImage === 'function') m3cSetImage(defThumb);
-            if (el.rightPanelCover) el.rightPanelCover.src = defThumb;
-            updateRightPanelBanner(defThumb);
+          // a dead cover: try the song's other covers (the right panel follows) before showing the placeholder
+          const next = nextPlayerArt(track, el.playbarArtwork);
+          if (next) {
+            if (typeof m3cSetImage === 'function') m3cSetImage(next);
+            if (el.rightPanelCover) el.rightPanelCover.src = next;
+            updateRightPanelBanner(next);
             updateThemeFromState();
             return;
           }
@@ -3276,18 +3363,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (el.rightPanelCover) {
         swapArtwork(el.rightPanelCover, thumb);
         el.rightPanelCover.onerror = () => {
-          if (state.currentTrack && getTrackArt(state.currentTrack).cover) {
-            setTrackArt(state.currentTrack, { cover: undefined });
-            const defThumb = state.currentTrack.thumbnail || '';
-            el.rightPanelCover.src = defThumb;
-            if (el.playbarArtwork) {
-              el.playbarArtwork.src = defThumb;
-              if (typeof m3cSetImage === 'function') m3cSetImage(defThumb);
-            }
-            updateRightPanelBanner(defThumb);
-            updateThemeFromState();
-            return;
-          }
+          const next = nextPlayerArt(track, el.rightPanelCover);
+          if (next) { updateRightPanelBanner(next); return; }
           el.rightPanelCover.style.display = 'none';
           if (el.rightPanelFallback) el.rightPanelFallback.style.display = 'flex';
         };
@@ -3518,6 +3595,187 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let crossfadeTriggered = false;
   let crossfadeFadeInPending = false;
+  // undoes the Crossfade fade-out of the playing song (a seek back, a pause, a skip, the queue ending)
+  function cancelEndFade() {
+    if (!crossfadeTriggered) return;
+    crossfadeTriggered = false;
+    if (audioEngine && audioEngine.masterGain && audioEngine.ctx) {
+      try { audioEngine.masterGain.gain.cancelScheduledValues(audioEngine.ctx.currentTime); } catch (e) {}
+      audioEngine._applyMasterVolume();
+    }
+  }
+
+  // ---- Crossfade with overlap (#29) ----
+  // The #22 fix let the song fade out to its real end, but the next one only started on 'ended', so Crossfade
+  // sounded like no crossfade at all. Now the last X seconds of the song move to a second player (the "tail",
+  // the same file opened again and seeked to that point before it's needed), which keeps playing to the song's
+  // real end (or its trim end) while fading out; the main player goes on to the next song at once, which fades
+  // in. Everything else (queue, now playing, scrobbling, media session) follows the main player as for any
+  // next song. Falls back to the plain fade-out when the song can't be opened twice (hls.js / blob sources),
+  // and on iPhones, where a player's volume can't be changed (so neither song could fade).
+  const xfade = { prep: null, tail: null, handingOver: false, fadeInRaf: 0 };
+  const crossfadeSeconds = () => parseInt(localStorage.getItem('muriel_crossfade') || '0', 10) || 0;
+  let volumeWorks = null;
+  function elementVolumeWorks() {
+    if (volumeWorks === null) {
+      try { const t = new Audio(); t.volume = 0.5; volumeWorks = Math.abs(t.volume - 0.5) < 0.01; } catch (e) { volumeWorks = false; }
+    }
+    return volumeWorks;
+  }
+  function canOverlap(a) {
+    if (!a || hlsInstance) return false;
+    const src = a.currentSrc || '';
+    if (!src || /^(blob|data):/.test(src)) return false;
+    return elementVolumeWorks();
+  }
+  // the level the song plays at: on computers the engine's master volume (the tail skips the effects chain)
+  function tailLevel() {
+    if (!audioEngine) return 1;
+    if (audioEngine.isMuted) return 0;
+    if (isPhoneApp) return 1;
+    const v = (Number(audioEngine.volume) || 0) * ((audioEngine.audioSettings && Number(audioEngine.audioSettings.volume)) || 1);
+    return Math.max(0, Math.min(1, v));
+  }
+  function disposeTailEl(t) {
+    if (!t) return;
+    try { t.pause(); t.removeAttribute('src'); t.load(); } catch (e) {}
+  }
+  function dropCrossfadePrep() {
+    const p = xfade.prep;
+    xfade.prep = null;
+    if (p) { clearTimeout(p.timer); disposeTailEl(p.el); }
+  }
+  // ends the old song's tail: at its end, or quickly (`fadeSec`) on a skip
+  function stopCrossfadeTail(fadeSec = 0) {
+    const t = xfade.tail;
+    if (!t) return;
+    xfade.tail = null;
+    clearInterval(t.loop);
+    if (!(fadeSec > 0) || t.el.paused) { disposeTailEl(t.el); return; }
+    const from = t.el.volume;
+    const started = performance.now();
+    const step = setInterval(() => {
+      const p = (performance.now() - started) / (fadeSec * 1000);
+      if (p >= 1) { clearInterval(step); disposeTailEl(t.el); return; }
+      try { t.el.volume = from * (1 - p); } catch (e) {}
+    }, 30);
+  }
+  function resumeCrossfadeTail() {
+    const t = xfade.tail;
+    if (t) Promise.resolve(t.el.play()).then(null, () => { if (xfade.tail === t) stopCrossfadeTail(0); });
+  }
+  function crossfadeTailRemaining() {
+    const t = xfade.tail;
+    if (!t) return 0;
+    return Math.max(0, (t.end - (t.el.currentTime || 0)) / (t.el.playbackRate || 1));
+  }
+  // the second player opened at the crossfade point, ready before it's needed
+  function prepareCrossfade(point, end) {
+    const a = el.nativeAudio;
+    dropCrossfadePrep();
+    const t = new Audio();
+    const p = { el: t, token: state.loadToken, point, end, ready: false, timer: 0 };
+    xfade.prep = p;
+    try {
+      t.preload = 'auto';
+      if (a.crossOrigin) t.crossOrigin = a.crossOrigin;
+      t.volume = 0;
+      t.playbackRate = a.playbackRate;
+      if ('preservesPitch' in a) t.preservesPitch = a.preservesPitch;
+      if (a.sinkId && typeof t.setSinkId === 'function') t.setSinkId(a.sinkId).catch(() => {});
+      t.addEventListener('loadedmetadata', () => { try { t.currentTime = point; } catch (e) {} }, { once: true });
+      t.addEventListener('seeked', () => { if (xfade.prep === p) p.ready = true; }, { once: true });
+      t.addEventListener('error', () => { if (xfade.prep === p) dropCrossfadePrep(); }, { once: true });
+      t.src = a.currentSrc;
+    } catch (e) { dropCrossfadePrep(); return; }
+    // timeupdate comes only every quarter second or so: a timer starts the overlap on time
+    const arm = () => {
+      clearTimeout(p.timer);
+      const wait = Math.max(0, ((point - (a.currentTime || 0)) / (a.playbackRate || 1)) * 1000);
+      p.timer = setTimeout(() => {
+        if (xfade.prep !== p) return;
+        if ((a.currentTime || 0) < point - 0.03) { arm(); return; }
+        startCrossfade();
+      }, wait);
+    };
+    arm();
+  }
+  // the main player is at the point: the tail takes over the old song, the main player goes on to the next one
+  function startCrossfade() {
+    const a = el.nativeAudio;
+    const p = xfade.prep;
+    if (!p || p.started) return;
+    p.started = true;
+    clearTimeout(p.timer);
+    const fallback = () => {
+      if (xfade.prep === p) dropCrossfadePrep();
+      if (p.token !== state.loadToken || a.paused || crossfadeTriggered) return;
+      // the plain fade-out of #22: the song still plays to its end, the next one starts on 'ended'
+      crossfadeTriggered = true;
+      if (audioEngine) audioEngine.fadeOut(Math.max(0.3, (p.end - a.currentTime) / (a.playbackRate || 1)));
+    };
+    if (!p.ready || p.token !== state.loadToken || a.paused || state.isRepeat || queueFinished()) { fallback(); return; }
+    const t = p.el;
+    const level = tailLevel();
+    try { t.currentTime = Math.min(p.end, a.currentTime + 0.02); } catch (e) {}
+    t.volume = 0; // silent until the main player lets go, or the two would play the same seconds twice
+    const played = t.play();
+    Promise.resolve(played).then(() => {
+      if (xfade.prep !== p || p.token !== state.loadToken || a.paused) { if (xfade.prep === p) dropCrossfadePrep(); else disposeTailEl(t); return; }
+      xfade.prep = null;
+      stopCrossfadeTail(0);
+      t.volume = level;
+      const tail = { el: t, end: p.end, point: p.point, level, loop: 0 };
+      xfade.tail = tail;
+      // fade out along the song's own time, so a pause holds the fade where it is
+      tail.loop = setInterval(() => {
+        if (xfade.tail !== tail) { clearInterval(tail.loop); return; }
+        const cur = t.currentTime || 0;
+        if (t.ended || cur >= tail.end - 0.02) { stopCrossfadeTail(0); return; }
+        try { t.volume = tail.level * window.MurielTrim.fadeOutGain((cur - tail.point) / (tail.end - tail.point)); } catch (e) {}
+      }, 40);
+      crossfadeFadeInPending = true;
+      xfade.handingOver = true;
+      state._isNaturalEnding = true;
+      try { playNext(); } finally { state._isNaturalEnding = false; xfade.handingOver = false; }
+    }, () => fallback());
+  }
+  // the next song fades in while the tail fades out: through the engine on computers, the volume on phones
+  function crossfadeFadeIn() {
+    const X = crossfadeSeconds();
+    const secs = Math.max(0.5, crossfadeTailRemaining() || X / 2);
+    if (!isPhoneApp) { if (X > 0 && audioEngine) audioEngine.fadeIn(secs); return; }
+    if (!elementVolumeWorks()) return;
+    const a = el.nativeAudio;
+    const started = performance.now();
+    cancelAnimationFrame(xfade.fadeInRaf);
+    const tick = () => {
+      const p = (performance.now() - started) / (secs * 1000);
+      try { a.volume = p >= 1 ? 1 : window.MurielTrim.fadeInGain(p); } catch (e) {}
+      if (p < 1) xfade.fadeInRaf = requestAnimationFrame(tick);
+    };
+    // a timer, not only frames: a phone with the screen off draws none
+    const timer = setInterval(() => { if (performance.now() - started > secs * 1000) { clearInterval(timer); try { a.volume = 1; } catch (e) {} } }, 250);
+    tick();
+  }
+  // anything but the crossfade itself starting a song (a skip, a pick, Previous) ends the tail quickly
+  function crossfadeOnTrackChange() {
+    dropCrossfadePrep();
+    if (xfade.handingOver) {
+      // the next song starts silent and fades in once it plays ('playing' -> crossfadeFadeIn)
+      if (isPhoneApp && elementVolumeWorks()) { try { el.nativeAudio.volume = 0; } catch (e) {} }
+      else if (audioEngine && audioEngine.masterGain && audioEngine.ctx) {
+        try { audioEngine.masterGain.gain.cancelScheduledValues(audioEngine.ctx.currentTime); audioEngine.masterGain.gain.setValueAtTime(0.001, audioEngine.ctx.currentTime); } catch (e) {}
+      }
+      return;
+    }
+    stopCrossfadeTail(0.25);
+    cancelAnimationFrame(xfade.fadeInRaf);
+    // a song that ended after the plain fade-out still fades the next one in ('ended' set it)
+    if (state._isNaturalEnding) return;
+    crossfadeFadeInPending = false;
+    if (isPhoneApp && elementVolumeWorks()) { try { el.nativeAudio.volume = 1; } catch (e) {} }
+  }
   let currentAlbumPlayRunId = 0;
 
   function pushPlayHistory(track) {
@@ -3573,7 +3831,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     state._skipRecordedFor = null;
 
     if (context !== 'album') currentAlbumPlayRunId++;
-    crossfadeTriggered = false;
+    cancelEndFade();
+    crossfadeOnTrackChange();
     state.nextTrackPrefetched = false;
     initAudioContext();
     el.nativeAudio.preload = 'auto';
@@ -3582,6 +3841,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       el.nativeAudio.pause();
       el.nativeAudio.removeAttribute('src');
       el.nativeAudio.load();
+      window.__murielVizSrc = '';
     } catch (e) {}
 
     if (hlsInstance) {
@@ -3673,6 +3933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (currentToken !== state.loadToken) return;
         el.nativeAudio.preload = 'auto';
         el.nativeAudio.src = streamUrl;
+        window.__murielVizSrc = streamUrl;
         playSmooth();
         applyAudioSettings();
         return;
@@ -3691,72 +3952,159 @@ document.addEventListener('DOMContentLoaded', async () => {
               resolvedId = sData.tracks[0].id;
               state.currentTrack.id = resolvedId;
               state.currentTrack.url = resolvedUrl;
+              if (!state.currentTrack.thumbnail && sData.tracks[0].thumbnail) state.currentTrack.thumbnail = sData.tracks[0].thumbnail;
             }
           } catch (e) {}
         }
       }
 
-      const streamInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${track.platform || state.platform}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}`;
-      const res = await fetch(streamInfoUrl, { signal });
-      const data = await res.json();
-
-      if (currentToken !== state.loadToken) return;
-
-      if (!data || !data.success || !data.streamUrl) {
-        if (!navigator.onLine) {
-          showToast(Tm('Offline: this track is not available in local cache'));
-          throw new Error('Offline: track not cached locally');
-        }
-        throw new Error((data && data.error) || 'Failed to extract audio stream');
-      }
-
-      if (hlsInstance) {
-        hlsInstance.destroy();
-        hlsInstance = null;
-      }
-
-      el.nativeAudio.preload = 'auto';
-
-      if (data.isHls && window.Hls && Hls.isSupported()) {
-        hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
-        hlsInstance.loadSource(data.streamUrl);
-        hlsInstance.attachMedia(el.nativeAudio);
-        hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (currentToken === state.loadToken) {
-            playSmooth();
-          }
-        });
-        // without this a dead HLS stream just sat on the loading spinner
-        hlsInstance.on(Hls.Events.ERROR, (evt, info) => {
-          if (!info || !info.fatal || currentToken !== state.loadToken) return;
-          const hls = hlsInstance;
-          if (info.type === Hls.ErrorTypes.MEDIA_ERROR && !hls._murielRecovered) {
-            hls._murielRecovered = true;
-            try { hls.recoverMediaError(); return; } catch (e) {}
-          }
-          try { hls.destroy(); } catch (e) {}
-          if (hlsInstance === hls) hlsInstance = null;
-          state.isPlaying = false;
-          document.body.classList.remove('is-playing');
-          updatePlayPauseButton(false, false);
-          if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
-          if (!skipUnplayable(currentToken, track)) showToast(Tm('Could not play this song. Try again or skip.'), 'error');
-        });
-      } else {
-        el.nativeAudio.src = data.streamUrl;
-        playSmooth();
-      }
-
+      if (!await attachStream(track, resolvedUrl, resolvedId, currentToken, signal, false)) return;
       applyAudioSettings();
     } catch (err) {
       if (err.name === 'AbortError') return;
       if (currentToken === state.loadToken) {
-        console.warn('Track playback notice:', err);
+        logPlaybackIssue('Track playback notice', err);
+        if (retryFresh(currentToken, track)) return;
         updatePlayPauseButton(false, false);
         if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
         if (!skipUnplayable(currentToken, track)) showToast(err.message || Tm('Could not load audio stream'), 'error');
       }
     }
+  }
+
+  // Looks the song up (/api/stream-info) and gives its stream to the audio element. Resolves false when
+  // another song was started meanwhile; throws when there is nothing to play.
+  async function attachStream(track, resolvedUrl, resolvedId, currentToken, signal, fresh) {
+    const streamInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}${fresh ? '&fresh=1' : ''}&platform=${track.platform || state.platform}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}`;
+    const res = await fetch(streamInfoUrl, { signal });
+    const data = await res.json();
+
+    if (currentToken !== state.loadToken) return false;
+
+    if (!data || !data.success || !data.streamUrl) {
+      if (!navigator.onLine) {
+        showToast(Tm('Offline: this track is not available in local cache'));
+        throw new Error('Offline: track not cached locally');
+      }
+      throw new Error((data && data.error) || 'Failed to extract audio stream');
+    }
+
+    if (hlsInstance) {
+      hlsInstance.destroy();
+      hlsInstance = null;
+    }
+
+    el.nativeAudio.preload = 'auto';
+
+    if (data.isHls && window.Hls && Hls.isSupported()) {
+      // hls.js feeds the element a MediaSource blob; a second element cannot analyse that, so the phone
+      // visualizer falls back to its synthetic waveform for HLS streams
+      window.__murielVizSrc = '';
+      hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
+      hlsInstance.loadSource(data.streamUrl);
+      hlsInstance.attachMedia(el.nativeAudio);
+      hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (currentToken === state.loadToken) {
+          playSmooth();
+        }
+      });
+      // without this a dead HLS stream just sat on the loading spinner
+      hlsInstance.on(Hls.Events.ERROR, (evt, info) => {
+        if (!info || !info.fatal || currentToken !== state.loadToken) return;
+        const hls = hlsInstance;
+        if (info.type === Hls.ErrorTypes.MEDIA_ERROR && !hls._murielRecovered) {
+          hls._murielRecovered = true;
+          try { hls.recoverMediaError(); return; } catch (e) {}
+        }
+        try { hls.destroy(); } catch (e) {}
+        if (hlsInstance === hls) hlsInstance = null;
+        state.isPlaying = false;
+        document.body.classList.remove('is-playing');
+        updatePlayPauseButton(false, false);
+        if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
+        if (retryFresh(currentToken, track)) return;
+        if (!skipUnplayable(currentToken, track)) showToast(Tm('Could not play this song. Try again or skip.'), 'error');
+      });
+    } else {
+      // #17: a YouTube media URL is bound to the player client yt-dlp resolved it with; Chromium fetching it
+      // with its own headers got "Format error" (code 4). On desktop it plays through the local proxy,
+      // which fetches with yt-dlp's headers; the direct URL stays as a fallback.
+      const src = pickStreamSrc(data);
+      proxyFallback = src !== data.streamUrl ? null : { token: currentToken, track, url: data.proxyUrl || '' };
+      // the phone visualizer's silent mirror element uses the proxy URL when there is one: it answers CORS,
+      // so the analyser gets real samples even though the audible element plays the direct stream
+      window.__murielVizSrc = data.proxyUrl || src;
+      el.nativeAudio.src = src;
+      playSmooth();
+    }
+    return true;
+  }
+
+  function isGoogleVideoUrl(u) {
+    try { const h = new URL(u).hostname; return h === 'googlevideo.com' || h.endsWith('.googlevideo.com'); } catch (e) { return false; }
+  }
+  // the src the audio element gets for a /api/stream-info answer (same rule as stream-source.js): phones
+  // play downloaded files and keep the URL they were given
+  function pickStreamSrc(data) {
+    const isMobile = !!(window.electronAPI && window.electronAPI.isMobile);
+    if (!isMobile && !data.isHls && !data.isLocal && data.proxyUrl && isGoogleVideoUrl(data.streamUrl)) return data.proxyUrl;
+    return data.streamUrl;
+  }
+  // a direct (not proxied) stream that failed to load is tried once through the local proxy before a fresh lookup
+  let proxyFallback = null;
+  function tryProxyFallback(token, track) {
+    const fb = proxyFallback;
+    proxyFallback = null;
+    if (!fb || !fb.url || fb.token !== token || token !== state.loadToken || fb.track !== track || track !== state.currentTrack) return false;
+    if (window.electronAPI && window.electronAPI.isMobile) return false;
+    const me = el.nativeAudio.error;
+    if (!me || (me.code !== 4 && me.code !== 2)) return false;
+    console.warn('Track playback: direct stream failed, trying the local proxy');
+    window.__murielVizSrc = fb.url;
+    el.nativeAudio.src = fb.url;
+    playSmooth();
+    return true;
+  }
+
+  // A song that fails the first time (the lookup, the audio element on its URL, or nothing arriving) is
+  // looked up once more, afresh, before the listener is told: the first failure was usually passing (a
+  // shared lookup that failed, a remembered stream URL YouTube no longer serves) and Retry then played it.
+  let freshRetryToken = -1;
+  // One line for the console and the app log: what failed, with the DOMException's name and message and
+  // the audio element's state (error code, readyState, networkState, which host it was loading from).
+  function describeMediaState(audio) {
+    if (!audio) return 'no audio element';
+    let host = '';
+    try { const s = audio.currentSrc || audio.src; host = s ? new URL(s).host : '(none)'; } catch (e) { host = '(bad url)'; }
+    const me = audio.error;
+    return `mediaError=${me ? me.code + (me.message ? ' ' + me.message : '') : 'none'} readyState=${audio.readyState} networkState=${audio.networkState} paused=${audio.paused} src=${host}${hlsInstance ? ' hls' : ''}`;
+  }
+  function logPlaybackIssue(what, err) {
+    const desc = err ? `${err.name || 'Error'}: ${err.message || String(err)}` : 'no details';
+    const line = `${what}: ${desc} | ${describeMediaState(el.nativeAudio)} | load=${state.loadToken}`;
+    console.warn(line);
+    try { if (window.__riffLogError) window.__riffLogError('WARN', line, null); } catch (e) {}
+    return line;
+  }
+  function retryFresh(token, track) {
+    if (token !== state.loadToken || freshRetryToken === token || !state.trackLoading || !track || track !== state.currentTrack || track.platform === 'local') return false;
+    if (!navigator.onLine) return false;
+    freshRetryToken = token;
+    console.warn('Track playback: retrying with a fresh lookup');
+    if (hlsInstance) { try { hlsInstance.destroy(); } catch (e) {} hlsInstance = null; }
+    try { el.nativeAudio.pause(); el.nativeAudio.removeAttribute('src'); el.nativeAudio.load(); } catch (e) {}
+    setTrackLoading(true);
+    if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.remove('hidden');
+    const signal = state.currentAbortController ? state.currentAbortController.signal : undefined;
+    attachStream(track, track.url, track.id, token, signal, true).then((ok) => { if (ok) applyAudioSettings(); }, (err) => {
+      if (err && err.name === 'AbortError') return;
+      if (token !== state.loadToken) return;
+      logPlaybackIssue('Track playback notice (fresh retry)', err);
+      updatePlayPauseButton(false, false);
+      if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
+      if (!skipUnplayable(token, track)) showToast((err && err.message) || Tm('Could not load audio stream'), 'error');
+    });
+    return true;
   }
 
   function flipAnimate(elements, mutateFn, duration = 380) {
@@ -4198,6 +4546,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const data = await res.json();
       if (data && data.success && Array.isArray(data.translations)) {
         lyricsTranslationCache.set(cacheKey, data.translations);
+        capMap(lyricsTranslationCache, 30);
         const curKey = `${(state.currentTrack && state.currentTrack.title) || ''}|${(state.currentTrack && state.currentTrack.artist) || ''}|${state.trLang || 'en'}`.toLowerCase();
         if (curKey === cacheKey && state.trActive) {
           state.currentTranslations = data.translations;
@@ -4582,8 +4931,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!isWordEnabled && state.lyricsMode === 'word') {
       state.lyricsMode = 'line';
     }
-    const label = state.lyricsMode === 'word' ? 'Word' : 'Line';
-    el.btnLyricsMode.querySelector('span').textContent = label;
+    I18N.text(el.btnLyricsMode.querySelector('span'), state.lyricsMode === 'word' ? 'Word' : 'Line');
   }
 
   if (el.btnLyricsMode) {
@@ -4628,6 +4976,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     tvIdleTimer = setTimeout(() => {
       const tvkPanel = document.getElementById('tvk-panel');
       if (tvkPanel && tvkPanel.classList.contains('open')) return;
+      // a finger held still on the seek bar is still using it: keep the row on screen, then try again
+      if (tvkSeekDragging) { resetTvIdleTimer(); return; }
       if (state.isTvKaraokeOpen && el.tvKaraoke) {
         el.tvKaraoke.classList.add('tv-idle');
       }
@@ -4922,7 +5272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } catch (e) {}
     }
 
-    const finalName = deviceName || 'Default output';
+    const finalName = deviceName || T('Default output');
     nameEl.textContent = finalName;
     if (outputContainer) outputContainer.title = finalName;
 
@@ -5062,7 +5412,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.tvKaraokeClose.addEventListener('click', closeTvKaraoke);
   }
   if (el.tvKaraoke) {
-    el.tvKaraoke.addEventListener('mousemove', resetTvIdleTimer);
+    // touch devices never fire mousemove, so the controls used to fade out under a finger that was
+    // still holding the seek bar (issue: the bar vanished while dragging)
+    ['mousemove', 'pointermove', 'pointerdown', 'touchstart', 'touchmove'].forEach((evt) => {
+      el.tvKaraoke.addEventListener(evt, resetTvIdleTimer, { passive: true });
+    });
   }
 
   const btnTvkPrev = document.getElementById('btn-tvk-prev');
@@ -5071,10 +5425,85 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (btnTvkPrev) btnTvkPrev.addEventListener('click', () => playPrev());
   if (btnTvkNext) btnTvkNext.addEventListener('click', () => playNext());
   if (btnTvkPlay) btnTvkPlay.addEventListener('click', () => togglePlayPause());
+  if (el.btnTvkFav) el.btnTvkFav.addEventListener('click', () => {
+    if (state.currentTrack) toggleFavoriteTrack(state.currentTrack);
+  });
+
+  // ---- Settings > Tracks > Output device (from Riff 43.1; computers) ----
+  // The song plays through the Web Audio graph when it is set up and through the <audio> element before that,
+  // so both get the device. A device that disappears while it plays (headphones unplugged) pauses the song
+  // instead of letting it go on from the speakers.
+  const OUTPUT_DEVICE_KEY = 'muriel_audio_output_device';
+  const canPickOutput = !isPhoneApp && !!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) && !!el.nativeAudio && typeof el.nativeAudio.setSinkId === 'function';
+  let outputDeviceId = (() => { try { return localStorage.getItem(OUTPUT_DEVICE_KEY) || ''; } catch (e) { return ''; } })();
+  let knownOutputIds = null;
+  async function applyOutputDevice() {
+    if (!canPickOutput) return;
+    const id = outputDeviceId === 'default' ? '' : outputDeviceId;
+    try { if (el.nativeAudio.sinkId !== id) await el.nativeAudio.setSinkId(id); } catch (e) { console.warn('Output device:', e && e.message); }
+    const ctx = audioEngine && audioEngine.ctx;
+    try { if (ctx && typeof ctx.setSinkId === 'function' && (ctx.sinkId || '') !== id) await ctx.setSinkId(id); } catch (e) {}
+  }
+  async function listOutputDevices() {
+    try { return (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audiooutput'); } catch (e) { return []; }
+  }
+  async function renderOutputDevices() {
+    const menu = document.getElementById('audio-output-menu');
+    const label = document.getElementById('audio-output-label');
+    if (!canPickOutput || !menu) return;
+    const devices = (await listOutputDevices()).filter((d) => d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    knownOutputIds = new Set(devices.map((d) => d.deviceId));
+    menu.textContent = '';
+    const add = (value, text) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'm3-dropdown-option' + ((outputDeviceId || '') === value ? ' selected' : '');
+      b.dataset.value = value;
+      b.textContent = text;
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        outputDeviceId = value;
+        try { if (value) localStorage.setItem(OUTPUT_DEVICE_KEY, value); else localStorage.removeItem(OUTPUT_DEVICE_KEY); } catch (_) {}
+        document.getElementById('audio-output-dropdown')?.classList.remove('open');
+        renderOutputDevices();
+        applyOutputDevice().then(() => updateTvkOutput());
+      });
+      menu.appendChild(b);
+      if ((outputDeviceId || '') === value && label) label.textContent = text;
+    };
+    add('', T('System default'));
+    devices.forEach((d, i) => add(d.deviceId, (d.label || '').replace(/^Default\s*[-–—:]\s*/i, '').trim() || Tf('Output {0}', i + 1)));
+    // the saved device is not connected now: shown as itself, played on the system default until it is back
+    if (outputDeviceId && !knownOutputIds.has(outputDeviceId)) add(outputDeviceId, T('Saved device (not connected)'));
+  }
+  if (canPickOutput) {
+    const row = document.getElementById('setting-audio-output-row');
+    if (row) row.hidden = false;
+    const dd = document.getElementById('audio-output-dropdown');
+    const trigger = document.getElementById('audio-output-trigger');
+    if (dd && trigger) {
+      trigger.addEventListener('click', (e) => { e.stopPropagation(); renderOutputDevices(); dd.classList.toggle('open'); });
+      document.addEventListener('click', () => dd.classList.remove('open'));
+    }
+    renderOutputDevices();
+    if (outputDeviceId) applyOutputDevice();
+    // the Web Audio graph is made on the first play: it gets the device then
+    el.nativeAudio.addEventListener('playing', () => { if (outputDeviceId) applyOutputDevice(); });
+  }
 
   if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
-    navigator.mediaDevices.addEventListener('devicechange', () => {
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
       updateTvkOutput();
+      if (!canPickOutput) return;
+      const before = knownOutputIds;
+      const now = new Set((await listOutputDevices()).map((d) => d.deviceId).filter((id) => id && id !== 'default' && id !== 'communications'));
+      const lostChosen = !!outputDeviceId && !!before && before.has(outputDeviceId) && !now.has(outputDeviceId);
+      if (state.isPlaying && lostChosen && el.nativeAudio && !el.nativeAudio.paused) {
+        el.nativeAudio.pause();
+        showToast(Tm('Paused: the output device was disconnected'), 'info');
+      }
+      renderOutputDevices();
+      if (outputDeviceId && now.has(outputDeviceId)) applyOutputDevice();
     });
   }
 
@@ -5753,6 +6182,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   function pauseSmooth() {
     const curToken = ++smoothFadeToken;
     state.isPlaying = false;
+    // a pause someone asked for: not undone when another app's sound ends (mobile/audio-interruption.js)
+    state.pausedByUser = true;
     setTrackLoading(false);
     updatePlayPauseButton(false, false);
     document.body.classList.remove('is-playing');
@@ -5762,6 +6193,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     sendStateToServer();
     updateMediaSession();
+    // a pause during a crossfade holds the old song's tail too (the fade follows its time, so it resumes in place)
+    dropCrossfadePrep();
+    if (xfade.tail) { try { xfade.tail.el.pause(); } catch (e) {} }
 
     const audio = el.nativeAudio;
     if (isAppClosing || !audio || audio.paused) {
@@ -5808,6 +6242,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function playSmooth() {
     const curToken = ++smoothFadeToken;
     state.isPlaying = true;
+    state.pausedByUser = false;
     document.body.classList.add('is-playing');
     updatePlayPauseButton(true, false);
     if (el.coverContainer && state.vfx.vinylSpin) el.coverContainer.classList.add('spinning');
@@ -5817,9 +6252,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     sendStateToServer();
     updateMediaSession();
 
+    if (xfade.tail && xfade.tail.el.paused) resumeCrossfadeTail();
     initAudioContext();
     if (audioEngine && audioEngine.ctx && audioEngine.ctx.state === 'suspended') {
-      await audioEngine.ctx.resume().catch(() => {});
+      // in a backgrounded WebView resume() can hang until the app is opened; don't let it hold play() back (#24).
+      // The 'play' / 'playing' handlers ask the context to resume again.
+      await Promise.race([audioEngine.ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 400))]);
     }
     if (curToken !== smoothFadeToken) return;
 
@@ -5841,17 +6279,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (el.nativeAudio) {
+      const loadTok = state.loadToken;
+      const playSrc = el.nativeAudio.currentSrc || el.nativeAudio.src;
       el.nativeAudio.play().catch(e => {
-        console.warn('Play error:', e);
+        // "[object DOMException]" told nobody anything (#17): say which one, and what the element was doing
+        logPlaybackIssue('Play error', e);
+        // AbortError: our own pause() or a newer src/load() interrupted this play(), not a failure
+        if (e && e.name === 'AbortError') return;
+        // a newer song (or a newer play/pause) took over meanwhile
+        if (loadTok !== state.loadToken || curToken !== smoothFadeToken) return;
+        if ((el.nativeAudio.currentSrc || el.nativeAudio.src) !== playSrc && !hlsInstance) return;
+        // a media error also fires the element's 'error' event, which retries / tells the listener itself
+        if (el.nativeAudio.error) return;
+        if (!el.nativeAudio.paused) return;
+        // anything else (NotAllowedError, NotSupportedError without a media error): look it up afresh once
+        if (retryFresh(loadTok, state.currentTrack)) return;
         // a refused play() (no gesture yet, source gone) left the button showing pause on a silent player.
-        // AbortError just means a newer load replaced this one.
-        if (curToken === smoothFadeToken && e && e.name !== 'AbortError' && el.nativeAudio.paused) {
-          state.isPlaying = false;
-          setTrackLoading(false);
-          document.body.classList.remove('is-playing');
-          updatePlayPauseButton(false, false);
-          if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
-        }
+        state.isPlaying = false;
+        setTrackLoading(false);
+        document.body.classList.remove('is-playing');
+        updatePlayPauseButton(false, false);
+        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
       });
     }
 
@@ -5919,11 +6367,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (pi >= 0 && pi !== state.queueIndex && !shuffleBag.played.has(planned)) return pi;
     if (q.length < 2) return 0;
     let pool = [];
-    q.forEach((t, i) => { if (i !== state.queueIndex && !shuffleBag.played.has(t)) pool.push(i); });
+    q.forEach((t, i) => { if (i !== state.queueIndex && !shuffleBag.played.has(t) && !isBlocked(t)) pool.push(i); });
     if (!pool.length) {
       shuffleBag.played = new Set([q[state.queueIndex]]);
-      q.forEach((t, i) => { if (i !== state.queueIndex) pool.push(i); });
+      q.forEach((t, i) => { if (i !== state.queueIndex && !isBlocked(t)) pool.push(i); });
     }
+    // everything else is blocked: the queue still moves on
+    if (!pool.length) q.forEach((t, i) => { if (i !== state.queueIndex) pool.push(i); });
     return pool[Math.floor(Math.random() * pool.length)];
   }
 
@@ -5936,7 +6386,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (pending) return pending;
     if (shuffleBag.planned && q.indexOf(shuffleBag.planned) >= 0 && shuffleBag.planned !== q[state.queueIndex]) return shuffleBag.planned;
     const played = shuffleBag.queue === q ? shuffleBag.played : new Set();
-    let pool = q.filter((t, i) => i !== state.queueIndex && !played.has(t));
+    let pool = q.filter((t, i) => i !== state.queueIndex && !played.has(t) && !isBlocked(t));
+    if (!pool.length) pool = q.filter((t, i) => i !== state.queueIndex && !isBlocked(t));
     if (!pool.length) pool = q.filter((t, i) => i !== state.queueIndex);
     shuffleBag.planned = pool[Math.floor(Math.random() * pool.length)] || null;
     return shuffleBag.planned;
@@ -5985,6 +6436,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     let nextIdx = state.queueIndex + 1;
+    while (nextIdx < state.queue.length && isBlocked(state.queue[nextIdx])) nextIdx++;
     if (nextIdx >= state.queue.length) {
       if (state.myWaveActive && typeof extendMyWaveQueue === 'function') {
         const tok = state.loadToken;
@@ -5998,6 +6450,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
       nextIdx = 0;
+      while (nextIdx < state.queueIndex && isBlocked(state.queue[nextIdx])) nextIdx++;
     }
     if (shuffleBag.next.length) shuffleBag.next = shuffleBag.next.filter(t => t !== state.queue[nextIdx]);
     state.queueIndex = nextIdx;
@@ -6051,8 +6504,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
       // only an error on the song that is actually loaded counts (unloading one between songs is not a failure)
       if (!state.currentTrack || (!el.nativeAudio.src && !hlsInstance)) return;
+      logPlaybackIssue('Audio element error', null);
       state.isPlaying = false;
       document.body.classList.remove('is-playing');
+      if (tryProxyFallback(state.loadToken, state.currentTrack)) return;
+      if (retryFresh(state.loadToken, state.currentTrack)) return;
       updatePlayPauseButton(false, false);
       if (skipUnplayable(state.loadToken, state.currentTrack)) return;
       if (state.currentTrack.platform === 'local') showToast(Tm('File missing from library'));
@@ -6061,19 +6517,41 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     el.nativeAudio.addEventListener('waiting', () => {
       updatePlayPauseButton(state.isPlaying, true);
+      if (!el.nativeAudio.paused) watchStall();
     });
+    el.nativeAudio.addEventListener('stalled', () => { if (!el.nativeAudio.paused) watchStall(); });
+    ['playing', 'pause', 'emptied'].forEach((ev) => el.nativeAudio.addEventListener(ev, clearStall));
 
+    // A stream that stops delivering mid-song (an expired or throttled link) is looked up afresh after 12 s
+    // and continues where it stopped, instead of spinning forever (Riff 44)
+    let stallTimer = null;
+    function clearStall() { if (stallTimer) clearTimeout(stallTimer); stallTimer = null; }
+    function watchStall() {
+      clearStall();
+      const token = state.loadToken;
+      const track = state.currentTrack;
+      stallTimer = setTimeout(() => {
+        stallTimer = null;
+        const a = el.nativeAudio;
+        if (token !== state.loadToken || track !== state.currentTrack || a.paused || a.readyState >= 3) return;
+        if (!track || track.platform === 'local' || state.trackLoading || !navigator.onLine) return;
+        const pos = a.currentTime || 0;
+        console.warn('Track playback: stalled, looking the stream up again');
+        const resume = () => { a.removeEventListener('loadedmetadata', resume); if (token === state.loadToken && pos > 1 && (!a.duration || pos < a.duration - 2)) a.currentTime = pos; };
+        a.addEventListener('loadedmetadata', resume);
+        const signal = state.currentAbortController ? state.currentAbortController.signal : undefined;
+        attachStream(track, track.url, track.id, token, signal, true).then((ok) => { if (ok) applyAudioSettings(); else a.removeEventListener('loadedmetadata', resume); }, () => a.removeEventListener('loadedmetadata', resume));
+      }, 12000);
+    }
+
+    // Each look-up starts yt-dlp, which can run a JavaScript runtime at full CPU (#16), so the computer
+    // only looks up the one song that plays next, and only near the end of this one. Phones download
+    // whole songs to play them, so they start on that halfway through.
     function prefetchNextQueueTrack() {
-      const nextIdx = state.queueIndex + 1;
-      if (state.queue && nextIdx < state.queue.length) {
-        const nextTrack = state.queue[nextIdx];
-        if (nextTrack && nextTrack.platform !== 'local') {
-          const qUrl = nextTrack.url || '';
-          const qId = nextTrack.id || '';
-          const qInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(qUrl)}&id=${encodeURIComponent(qId)}&platform=${nextTrack.platform || state.platform}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&thumbnail=${encodeURIComponent(nextTrack.thumbnail || '')}`;
-          fetch(qInfoUrl).catch(() => {});
-        }
-      }
+      const nextTrack = state.isShuffle ? planShuffleNext() : (state.queue && state.queue.slice(state.queueIndex + 1).find((t) => !isBlocked(t)));
+      if (!nextTrack || nextTrack.platform === 'local' || !(nextTrack.url || nextTrack.id)) return;
+      const q = `url=${encodeURIComponent(nextTrack.url || '')}&id=${encodeURIComponent(nextTrack.id || '')}&platform=${nextTrack.platform || state.platform}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&thumbnail=${encodeURIComponent(nextTrack.thumbnail || '')}`;
+      fetch(`http://127.0.0.1:${state.serverPort}/api/${isPhoneApp ? 'stream-info' : 'prefetch'}?${q}&next=1`).catch(() => {});
     }
 
     el.nativeAudio.addEventListener('playing', () => {
@@ -6083,8 +6561,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       registerMediaActions();
       document.body.classList.add('is-playing');
       updatePlayPauseButton(true, false);
-      // warm up the next two songs (staggered) so skipping or a slow network never leaves a gap
-      const upcoming = state.isShuffle ? [planShuffleNext()] : [1, 2].map(ahead => state.queue && state.queue[state.queueIndex + ahead]);
+      // phones warm up the next two songs (staggered) so skipping or a slow network never leaves a gap;
+      // the computer looks up only the next one, near the end of this one (prefetchNextQueueTrack, #16)
+      const upcoming = !isPhoneApp ? [] : state.isShuffle ? [planShuffleNext()] : [1, 2].map(ahead => state.queue && state.queue[state.queueIndex + ahead]);
       upcoming.forEach((nextTrack, k) => {
         if (nextTrack && nextTrack.url && nextTrack.platform !== 'local') {
           setTimeout(() => {
@@ -6127,8 +6606,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       if (crossfadeFadeInPending) {
         crossfadeFadeInPending = false;
-        const X = parseInt(localStorage.getItem('muriel_crossfade') || '0', 10);
-        if (X > 0 && audioEngine) audioEngine.fadeIn(X / 2);
+        crossfadeFadeIn();
       }
       sendStateToServer();
       updateMediaSession();
@@ -6136,6 +6614,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     el.nativeAudio.addEventListener('pause', () => {
+      if (!el.nativeAudio.ended) cancelEndFade();
       emitPluginEvent('pause');
       updatePlayPauseButton(false, false);
       if (state.isPlaying) {
@@ -6167,6 +6646,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (audioEngine.suspendAudioContextDebounced) audioEngine.suspendAudioContextDebounced(5000);
         if (audioEngine.setAnalyserEnabled) audioEngine.setAnalyserEnabled(false);
       }
+      // a song that faded out (Crossfade) hands over to one that fades in
+      const fadedOut = crossfadeTriggered && !state.isRepeat && !queueFinished();
+      if (!fadedOut) cancelEndFade();
       if (state.isRepeat) {
         el.nativeAudio.currentTime = 0;
         playSmooth();
@@ -6175,6 +6657,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         queueEndedToken = state.loadToken;
         saveQueueState();
       } else {
+        if (fadedOut) crossfadeFadeInPending = true;
         state._isNaturalEnding = true;
         try {
           playNext();
@@ -6193,6 +6676,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (Math.abs(a.playbackRate - rate) > 0.001 || a.preservesPitch !== preservePitch) audioEngine.applySettings(a);
     };
     ['loadedmetadata', 'canplay', 'playing'].forEach(ev => el.nativeAudio.addEventListener(ev, keepPlaybackRate));
+
+    // The iPhone's Now Playing widget moves its progress bar on its own from the last position and rate it was
+    // given. Told only at play / pause, it kept the rate WebKit had reset to 1 before the song's speed was put
+    // back (a sped-up song's bar lagged), and a length that wasn't known yet (#26). Tell it again whenever any
+    // of them changes, and now and then while playing.
+    let positionSentAt = 0;
+    const sendPosition = () => { positionSentAt = Date.now(); updateMediaPositionState(); };
+    ['ratechange', 'durationchange', 'loadedmetadata', 'seeked', 'playing'].forEach(ev => el.nativeAudio.addEventListener(ev, sendPosition));
+    el.nativeAudio.addEventListener('timeupdate', () => {
+      if (!el.nativeAudio.paused && Date.now() - positionSentAt > 10000) sendPosition();
+    });
 
     el.nativeAudio.addEventListener('durationchange', () => {
       const audio = el.nativeAudio;
@@ -6218,6 +6712,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     el.nativeAudio.addEventListener('seeked', () => {
+      cancelEndFade(); // timeupdate fades again from here if the seek stayed inside the last seconds
       updateMediaPositionState();
       updateDiscordPresence();
       state.forceLyricsScroll = true;
@@ -6238,22 +6733,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (state.isTvKaraokeOpen) syncTvkProgress(cur, dur);
       if (miniLyricsShown()) updateMiniLyricsHighlight(cur);
 
-      const X = parseInt(localStorage.getItem('muriel_crossfade') || '0', 10);
-      // "end of track" sleep timer: let the song end on its own so the ended handler can stop playback
-      const sleepAtEnd = !!(state.sleepTimer && state.sleepTimer.mode === 'end');
-      if (X > 0 && !crossfadeTriggered && !state.isRepeat && !sleepAtEnd && dur > X && cur >= dur - X && !queueFinished() && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
-        crossfadeTriggered = true;
-        crossfadeFadeInPending = true;
-        if (audioEngine) audioEngine.fadeOut(X / 2);
-        state._isNaturalEnding = true;
-        try {
-          playNext();
-        } finally {
-          state._isNaturalEnding = false;
+      // Crossfade (off by default): fade the song out over its last X seconds while it keeps playing; the
+      // 'ended' handler starts the next one, which fades in. This used to skip to the next song X seconds before
+      // the end, which cut every song short by the crossfade length (#22).
+      // With overlap (#29) the last X seconds move to a second player that plays them to the end while the next
+      // song starts (prepareCrossfade); the song itself is never cut short.
+      const X = crossfadeSeconds();
+      if (X > 0 && !crossfadeTriggered && !state.isRepeat && !el.nativeAudio.paused && audioEngine && !audioEngine.isLiveStream(el.nativeAudio) && window.MurielTrim) {
+        const trim = state.currentTrack ? getTrackTrim(state.currentTrack) : null;
+        const end = window.MurielTrim.isActive(trim) ? Math.min(trim.end, dur) : dur;
+        const sleepAtEnd = state.sleepTimer && state.sleepTimer.mode === 'end';
+        const step = !sleepAtEnd && canOverlap(el.nativeAudio) && !queueFinished() ? window.MurielTrim.crossfadeStep(cur, end, X, el.nativeAudio.playbackRate) : null;
+        if (step && !xfade.prep) {
+          prepareCrossfade(window.MurielTrim.crossfadePoint(end, X), end);
+        } else if (!step && !xfade.prep) {
+          const fade = window.MurielTrim.endFadeSeconds(cur, end, X, el.nativeAudio.playbackRate);
+          if (fade > 0) {
+            crossfadeTriggered = true;
+            audioEngine.fadeOut(fade);
+          }
         }
       }
 
-      if (state.isPlaying && dur > 0 && cur / dur > 0.5 && !state.nextTrackPrefetched) {
+      if (state.isPlaying && nextPrefetchDue(cur, dur) && !state.nextTrackPrefetched) {
         state.nextTrackPrefetched = true;
         prefetchNextQueueTrack();
       }
@@ -6293,9 +6795,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     return targetTime;
   }
 
+  // Pointer events (not mouse events) so a finger drag scrubs too: on Android a touch drag never fires
+  // mousemove, only the tap's synthesized mousedown/mouseup, so only tapping used to seek (#21).
+  let scrubberPointerId = null;
   if (el.scrubberTrack) {
-    el.scrubberTrack.addEventListener('mousedown', (e) => {
+    el.scrubberTrack.style.touchAction = 'none';
+    el.scrubberTrack.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
       isDraggingScrubber = true;
+      scrubberPointerId = e.pointerId;
+      try { el.scrubberTrack.setPointerCapture(e.pointerId); } catch (_) {}
       hasDrawnPausedFrame = false;
       if (!animationFrameId) startVisualizers();
       el.scrubberTrack.classList.add('dragging');
@@ -6303,22 +6812,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  window.addEventListener('mousemove', (e) => {
-    if (!isDraggingScrubber) return;
+  window.addEventListener('pointermove', (e) => {
+    if (!isDraggingScrubber || e.pointerId !== scrubberPointerId) return;
     updateScrubberPositionFromEvent(e);
   });
 
-  window.addEventListener('mouseup', (e) => {
-    if (!isDraggingScrubber) return;
+  const endScrub = (e, commit) => {
+    if (!isDraggingScrubber || e.pointerId !== scrubberPointerId) return;
     isDraggingScrubber = false;
+    scrubberPointerId = null;
     if (el.scrubberTrack) el.scrubberTrack.classList.remove('dragging');
-    const targetTime = updateScrubberPositionFromEvent(e);
-    if (!isNaN(targetTime) && el.nativeAudio) {
+    const targetTime = commit ? updateScrubberPositionFromEvent(e) : state.scrubberDragTargetTime;
+    if (targetTime !== undefined && !isNaN(targetTime) && el.nativeAudio) {
       el.nativeAudio.currentTime = targetTime;
       updateMediaPositionState();
     }
     state.scrubberDragTargetTime = undefined;
-  });
+  };
+  window.addEventListener('pointerup', (e) => endScrub(e, true));
+  window.addEventListener('pointercancel', (e) => endScrub(e, false));
 
   function getAllPresets() {
     return [...defaultPresets, ...state.customPresets];
@@ -6730,7 +7242,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const grid = document.getElementById('saved-albums-grid');
     if (!grid) return;
     updateAlbumsCount();
-    const albums = getSavedAlbums();
+    const albums = sortedLibrary('albums', getSavedAlbums());
     if (!albums.length) {
       grid.innerHTML = '<div class="empty-hint">No saved albums yet. Open an album and tap the heart to save it.</div>';
       return;
@@ -6818,6 +7330,78 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (btnDmLike) btnDmLike.addEventListener('click', () => rateDailyMix(true));
   if (btnDmDislike) btnDmDislike.addEventListener('click', () => rateDailyMix(false));
 
+  // ---- Download a whole album (#19): the playlist download (openDownloadAllModal) with the album's songs.
+  // Songs already on this device (downloaded, or in the offline cache) are left out; when that is all of them
+  // the button shows a check. While it runs the button counts the songs.
+  let albumDownload = null;
+  function renderAlbumDownloadButton() {
+    const btn = document.getElementById('btn-download-album');
+    if (!btn) return;
+    const d = albumDownload;
+    const items = d ? d.items : [];
+    const all = !!d && items.length > 0 && d.downloaded.length === items.length && d.downloaded.every(Boolean);
+    btn.disabled = !items.length;
+    btn.classList.toggle('is-done', all && !(d && d.busy));
+    btn.classList.toggle('is-busy', !!(d && d.busy));
+    const prog = btn.querySelector('.dl-album-progress');
+    if (prog) prog.textContent = d && d.busy ? d.progress : '';
+    btn.title = d && d.busy ? Tf('Downloading {0}', d.progress) : all ? T('Album downloaded') : T('Download album');
+    btn.setAttribute('aria-label', btn.title);
+  }
+  async function refreshAlbumDownloadState(d) {
+    if (!d || !state.serverPort) return;
+    try {
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/downloaded-status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks: d.items.map((t) => ({ title: t.title || '', artist: t.artist || '', id: String(t.id || '') })) }),
+      });
+      const data = await res.json();
+      if (albumDownload !== d || !data || !data.success || !Array.isArray(data.downloaded)) return;
+      d.downloaded = data.downloaded.map(Boolean);
+    } catch (e) {}
+    if (albumDownload === d) renderAlbumDownloadButton();
+  }
+  // items: the rows of the album page; sources: the album's own songs (found on YouTube when downloaded)
+  function setupAlbumDownload(album, items, sources, isMix) {
+    // a download of another album still running keeps its own object; this page gets a new one
+    const keep = (items || []).map((t, i) => ({ t, src: (sources || [])[i] })).filter((x) => x.t && x.t.platform !== 'local');
+    albumDownload = { album, items: keep.map((x) => x.t), sources: keep.map((x) => x.src), isMix, downloaded: [], busy: false, progress: '' };
+    renderAlbumDownloadButton();
+    refreshAlbumDownloadState(albumDownload);
+  }
+  function resetAlbumDownload() {
+    albumDownload = null;
+    renderAlbumDownloadButton();
+  }
+  const btnDownloadAlbum = document.getElementById('btn-download-album');
+  if (btnDownloadAlbum) {
+    btnDownloadAlbum.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const d = albumDownload;
+      if (!d || !d.items.length) return;
+      if (d.busy) { showToast(Tm('This album is downloading: {0}', d.progress), 'info'); return; }
+      const missing = d.items.filter((_, i) => !d.downloaded[i]);
+      if (!missing.length) { showToast(Tm('This album is already downloaded'), 'info'); return; }
+      const byId = new Map(d.items.map((t, i) => [t.id, d.sources[i]]));
+      if (missing.length < d.items.length) showToast(Tm('{0} of {1} songs are already downloaded: getting the rest', d.items.length - missing.length, d.items.length), 'info');
+      openDownloadAllModal({
+        name: d.album.title || 'Album',
+        tracks: missing,
+        resolve: d.isMix ? null : (t) => resolveAlbumTrack(d.album, byId.get(t.id)),
+        onProgress: (i, n) => {
+          d.busy = true;
+          d.progress = `${i + 1}/${n}`;
+          if (albumDownload === d) renderAlbumDownloadButton();
+        },
+        onDone: () => {
+          d.busy = false;
+          d.progress = '';
+          if (albumDownload === d) { renderAlbumDownloadButton(); refreshAlbumDownloadState(d); }
+        },
+      }, 'Download album');
+    });
+  }
+
   let currentAlbumRunId = 0;
 
   // An album from iTunes (its songs are found on YouTube when played), or a Daily Mix (album.type 'Daily Mix',
@@ -6831,6 +7415,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.previousView = state.currentView;
     switchView('album');
     showAlbumExtras(album);
+    resetAlbumDownload();
 
     const coverEl = document.getElementById('album-detail-cover');
     if (coverEl) {
@@ -6954,6 +7539,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         ...(t.isExplicit ? { isExplicit: true } : {})
       }));
       const playFrom = (idx) => (isMix ? playTrack(items[idx], items, idx, 'album') : playAlbumFrom(album, tracks, idx));
+      setupAlbumDownload(album, items, isMix ? items : tracks, isMix);
 
       const playAlbumBtn = document.getElementById('btn-play-album');
       if (playAlbumBtn) {
@@ -7194,7 +7780,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const count = document.getElementById('multi-select-count');
     if (count) count.textContent = `${multiSel.tracks.size} selected`;
     const hasSel = multiSel.tracks.size > 0;
-    ['multi-select-fav', 'multi-select-add', 'multi-select-download', 'multi-select-remove'].forEach(id => {
+    ['multi-select-fav', 'multi-select-add', 'multi-select-radio', 'multi-select-download', 'multi-select-remove'].forEach(id => {
       const b = document.getElementById(id);
       if (b) b.disabled = !hasSel;
     });
@@ -7288,7 +7874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       row.innerHTML = `
       <span class="track-row-index">${(isAlbum && track.no) ? track.no : (idx + 1)}</span>
-      ${!isAlbum ? `<img class="track-row-thumb" src="${escapeHtml(listThumb(rowThumb) || '')}" data-full="${escapeHtml(rowThumb || '')}" alt="" loading="lazy" decoding="async" onerror="${THUMB_FALLBACK}">` : ''}
+      ${!isAlbum ? `<img class="track-row-thumb" src="${escapeHtml(listThumb(rowThumb) || '')}" data-full="${escapeHtml(rowThumb || '')}" data-saved="${escapeHtml(track.thumbnail || '')}" data-art="${escapeHtml(JSON.stringify(trackArtCandidates(track)))}" alt="" decoding="async" onerror="${THUMB_FALLBACK}">` : ''}
       <div class="track-row-info">
       <span class="track-row-title">${escapeHtml(track.title || 'untitled')}</span>
       ${explicitTag ? `<span class="track-row-artist-wrap">${explicitTag}${artistSpan}</span>` : artistSpan}
@@ -7318,6 +7904,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
         `;
 
+        // no fade replay for a cover this session has already shown (virtualised rows are recreated on scroll)
+        markCachedThumbsLoaded(row);
+
         if (multiSel.active && multiSel.context === context) {
           const chk = document.createElement('span');
           chk.className = 'track-row-check';
@@ -7326,21 +7915,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           row.classList.add('selectable');
           if (multiSel.tracks.has(canonicalId)) row.classList.add('selected');
         }
-
-        let prefetchTimer = null;
-        row.addEventListener('mouseenter', () => {
-          if (track.url && track.platform !== 'local') {
-            prefetchTimer = setTimeout(() => {
-              fetch(`http://127.0.0.1:${state.serverPort}/api/prefetch?url=${encodeURIComponent(track.url)}&id=${encodeURIComponent(track.id)}&platform=${track.platform || state.platform}`).catch(() => {});
-            }, 300);
-          }
-        });
-        row.addEventListener('mouseleave', () => {
-          if (prefetchTimer) {
-            clearTimeout(prefetchTimer);
-            prefetchTimer = null;
-          }
-        });
 
         row.addEventListener('click', (e) => {
           if (e.target.closest('.track-row-actions')) return;
@@ -7396,6 +7970,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isFavNow = state.favorites.some(f => isSameSong(f, track));
             const svg = btnFav.querySelector('svg');
             if (svg) svg.setAttribute('fill', isFavNow ? 'currentColor' : 'none');
+            updatePlaylistFavAllButton();
           });
         }
 
@@ -7485,6 +8060,75 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  // ---------- blocked artists and songs (from Riff 43.1; matching in library-pages.js) ----------
+  // Skipped when the queue moves on (a blocked song still plays when tapped), kept out of My Wave, the mixes and
+  // For you. Per profile, and the same on linked devices (sync.js).
+  const BLOCKED_ARTISTS_KEY = 'muriel_blocked_artists';
+  const BLOCKED_SONGS_KEY = 'muriel_blocked_tracks';
+  // parsed again only when the stored text changed (a linked device or another profile wrote it)
+  let blocksCache = null;
+  function getBlocks() {
+    let rawA = '', rawS = '';
+    try { rawA = localStorage.getItem(BLOCKED_ARTISTS_KEY) || ''; rawS = localStorage.getItem(BLOCKED_SONGS_KEY) || ''; } catch (e) {}
+    if (blocksCache && blocksCache.rawA === rawA && blocksCache.rawS === rawS) return blocksCache;
+    const parse = (raw) => { try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
+    blocksCache = { rawA, rawS, artists: parse(rawA).filter((a) => typeof a === 'string'), songs: parse(rawS).filter((t) => t && typeof t === 'object') };
+    return blocksCache;
+  }
+  function isBlocked(track) {
+    const b = getBlocks();
+    return (b.artists.length > 0 || b.songs.length > 0) && Lib.isTrackBlocked(b, track);
+  }
+  function saveBlocks(key, list) {
+    try { localStorage.setItem(key, JSON.stringify(list)); } catch (e) {}
+    blocksCache = null;
+    renderBlockedSettings();
+    updateArtistBlockButton();
+  }
+  function toggleBlockArtist(name) {
+    const r = Lib.toggleBlockedArtist(getBlocks().artists, name);
+    saveBlocks(BLOCKED_ARTISTS_KEY, r.list);
+    showToast(Tm(r.blocked ? 'Blocked {0}: their songs are skipped' : 'Unblocked {0}', name), 'info');
+  }
+  function toggleBlockSong(track) {
+    const r = Lib.toggleBlockedSong(getBlocks().songs, track);
+    saveBlocks(BLOCKED_SONGS_KEY, r.list);
+    showToast(Tm(r.blocked ? 'Blocked "{0}": it is skipped' : 'Unblocked "{0}"', track.title || ''), 'info');
+  }
+  // Settings > Tracks: what is blocked, a tap unblocks it
+  function renderBlockedSettings() {
+    const box = document.getElementById('blocked-items-list');
+    if (!box) return;
+    const { artists, songs } = getBlocks();
+    box.textContent = '';
+    if (!artists.length && !songs.length) {
+      const none = document.createElement('span');
+      none.className = 'blocked-empty';
+      I18N.text(none, 'Nothing blocked. Block an artist or a song from its menu or the artist page.');
+      box.appendChild(none);
+      return;
+    }
+    const pill = (label, kind, run) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'blocked-item-pill';
+      b.title = T('Unblock');
+      const name = document.createElement('span');
+      name.className = 'blocked-item-name';
+      name.textContent = label;
+      const tag = document.createElement('span');
+      tag.className = 'blocked-item-kind';
+      I18N.text(tag, kind);
+      b.append(name, tag);
+      b.insertAdjacentHTML('beforeend', '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>');
+      b.addEventListener('click', run);
+      box.appendChild(b);
+    };
+    artists.forEach((a) => pill(a, 'Artist', () => toggleBlockArtist(a)));
+    songs.forEach((t) => pill(t.artist ? `${t.title} · ${t.artist}` : t.title, 'Song', () => toggleBlockSong(t)));
+  }
+  renderBlockedSettings();
+
   function openTrackContextMenu(x, y, track, context, row) {
     closeTrackContextMenu();
     const isFav = state.favorites.some(f => isSameSong(f, track));
@@ -7511,12 +8155,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateQueueBadge();
         showToast(Tm('Added to queue'), 'success');
       } },
+      ...(songRadioEnabled() ? [{ label: 'Start radio', run: () => startSongRadio([track]) }] : []),
       { label: 'Add to playlist…', run: () => openAddToPlaylistModal(track) },
       { label: isFav ? 'Remove from favorites' : 'Add to favorites', run: () => {
         toggleFavoriteTrack(track);
         const on = state.favorites.some(f => isSameSong(f, track));
         const svg = row.querySelector('.btn-row-fav svg');
         if (svg) svg.setAttribute('fill', on ? 'currentColor' : 'none');
+        updatePlaylistFavAllButton();
       } }
     ];
     if (track.artist && !/^unknown artist$/i.test(track.artist)) {
@@ -7527,6 +8173,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     if (context === 'playlist') {
       items.push({ label: 'Remove from playlist', danger: true, run: () => removeTrackFromCurrentPlaylist(track) });
+    }
+    if (track.title) {
+      items.push({ label: Lib.isSongBlocked(getBlocks().songs, track) ? 'Unblock song' : 'Block song', run: () => toggleBlockSong(track) });
+    }
+    if (track.artist && !/^unknown artist$/i.test(track.artist)) {
+      const artistName = String(track.artist).split(/\s*(?:,|&|\bfeat\.?|\bft\.?)\s*/i)[0].trim();
+      if (artistName) items.push({ label: Lib.isArtistBlocked(getBlocks().artists, artistName) ? 'Unblock artist' : 'Block artist', run: () => toggleBlockArtist(artistName) });
     }
 
     const menu = document.createElement('div');
@@ -7559,6 +8212,61 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('resize', closeTrackContextMenu);
   document.addEventListener('scroll', closeTrackContextMenu, true);
 
+  // A small anchored menu for header actions (share/export, select, sort). Reuses the track menu's look.
+  let actionMenuEl = null;
+  let actionMenuAnchor = null;
+  function closeActionMenu() {
+    if (actionMenuEl) actionMenuEl.remove();
+    actionMenuEl = null;
+    actionMenuAnchor = null;
+  }
+  function openActionMenu(anchor, items) {
+    if (!anchor) return;
+    if (actionMenuEl && actionMenuAnchor === anchor) { closeActionMenu(); return; }
+    closeActionMenu();
+    const menu = document.createElement('div');
+    menu.className = 'track-context-menu action-menu';
+    menu.setAttribute('role', 'menu');
+    items.forEach((item) => {
+      if (item.separator) {
+        const sep = document.createElement('div');
+        sep.className = 'action-menu-sep';
+        menu.appendChild(sep);
+        return;
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'track-context-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
+      b.setAttribute('role', 'menuitem');
+      b.textContent = (item.checked ? '✓ ' : '') + T(item.label);
+      b.dataset.i18n = '';
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeActionMenu();
+        if (item.run) item.run();
+      });
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const mr = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mr.width - 8))}px`;
+    let top = r.bottom + 8;
+    if (top + mr.height > window.innerHeight - 8) top = Math.max(8, r.top - mr.height - 8);
+    menu.style.top = `${top}px`;
+    actionMenuEl = menu;
+    actionMenuAnchor = anchor;
+  }
+  document.addEventListener('click', (e) => {
+    if (!actionMenuEl) return;
+    if (actionMenuEl.contains(e.target)) return;
+    if (actionMenuAnchor && actionMenuAnchor.contains(e.target)) return; // the trigger toggles itself
+    closeActionMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActionMenu(); });
+  window.addEventListener('scroll', closeActionMenu, true);
+  window.addEventListener('resize', closeActionMenu);
+
   function renderTracks(container, tracks, context = 'search') {
     if (!container) return;
     
@@ -7568,9 +8276,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       scrollParent.removeEventListener('scroll', container._vScrollHandler);
     }
     
-    container.innerHTML = '';
-    
+    // a fresh list (new data, sort or filter) may reuse nothing: every row belongs to the previous track array
+    container._rowPool = new Map();
+
     if (!tracks || tracks.length === 0) {
+      container.innerHTML = '';
       container.style.paddingTop = '0px';
       container.style.paddingBottom = '0px';
       const emptyMessages = {
@@ -7608,18 +8318,38 @@ document.addEventListener('DOMContentLoaded', async () => {
       container._lastEndIndex = endIndex;
       
       const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
+      // Reuse the row elements that are already on screen. Rebuilding them dropped every cover <img>, so iOS
+      // reloaded and repainted each one on every scroll step and the list flashed. Moving an existing row keeps
+      // its decoded image untouched; only rows entering the overscan area are created.
+      const pool = container._rowPool || new Map();
+      const nextPool = new Map();
       const fragment = document.createDocumentFragment();
       for (let idx = startIndex; idx < endIndex; idx++) {
-         const track = tracks[idx];
-         const row = createTrackRow(track, idx, currentCanonicalId, context, tracks, container);
-         if (container._hasInitialRendered) row.style.animation = 'none';
-         fragment.appendChild(row);
+        const track = tracks[idx];
+        let row = pool.get(idx);
+        if (row && row._trackRef !== track) row = null;
+        if (!row) {
+          row = createTrackRow(track, idx, currentCanonicalId, context, tracks, container);
+          row._trackRef = track;
+          if (container._hasInitialRendered) row.style.animation = 'none';
+        }
+        nextPool.set(idx, row);
+        fragment.appendChild(row);
       }
-      
-      container.innerHTML = '';
+
+      // keep a screen or so either side so a quick flick back reuses the same covers instead of rebuilding them
+      const keepFrom = Math.max(0, startIndex - 60);
+      const keepTo = Math.min(tracks.length, endIndex + 60);
+      pool.forEach((row, idx) => {
+        if (idx >= keepFrom && idx < keepTo && !nextPool.has(idx)) nextPool.set(idx, row);
+      });
+      container._rowPool = nextPool;
+
       container.style.paddingTop = `${startIndex * itemHeight}px`;
       container.style.paddingBottom = `${(tracks.length - endIndex) * itemHeight}px`;
-      container.appendChild(fragment);
+      // replaceChildren removes the rows that scrolled away and installs the reused ones in one paint
+      if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
+      else { container.innerHTML = ''; container.appendChild(fragment); }
       container._hasInitialRendered = true;
       highlightPlayingRow();
     }
@@ -7900,11 +8630,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // who the page shows: { name, id, ids, avatar, fans }; the name the page was opened with until it loads
   let artistOnPage = null;
   function updateFollowButton() {
+    updateArtistBlockButton();
     const btn = document.getElementById('btn-artist-follow');
     if (!btn) return;
     const on = !!artistOnPage && Lib.isArtistFollowed(getFollowedArtists(), artistOnPage);
     btn.classList.toggle('following', on);
-    btn.textContent = on ? 'Following' : 'Follow';
+    I18N.text(btn, on ? 'Following' : 'Follow');
     btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   }
   const btnArtistFollow = document.getElementById('btn-artist-follow');
@@ -7917,6 +8648,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       showToast(r.followed ? `Following ${artistOnPage.name}` : `Unfollowed ${artistOnPage.name}`, 'info');
     });
   }
+
+  function updateArtistBlockButton() {
+    const btn = document.getElementById('btn-artist-block');
+    if (!btn) return;
+    const on = !!artistOnPage && Lib.isArtistBlocked(getBlocks().artists, artistOnPage.name);
+    btn.classList.toggle('blocked', on);
+    I18N.text(btn, on ? 'Blocked' : 'Block');
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  const btnArtistBlock = document.getElementById('btn-artist-block');
+  if (btnArtistBlock) btnArtistBlock.addEventListener('click', () => { if (artistOnPage) toggleBlockArtist(artistOnPage.name); });
 
   let artistRunId = 0;
   // `id` (the artist's channel) or `video` (a video of theirs) tells artists with the same name apart;
@@ -7990,6 +8732,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!bioFromCache) {
         const cleanBio = String(artist.bio || '').replace(/<[^>]*>/g, '').trim();
         artistBioCache.set(artist.id || cleanName.toLowerCase(), cleanBio);
+        capMap(artistBioCache, 100);
         setArtistBio(cleanBio);
       }
 
@@ -8079,13 +8822,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function updateFavoriteIcon() {
-    if (!el.favIcon) return;
-    if (!state.currentTrack) {
-      el.favIcon.setAttribute('fill', 'none');
-      return;
+    const isFav = !!(state.currentTrack && state.favorites.some(f => isSameSong(f, state.currentTrack)));
+    if (el.favIcon) el.favIcon.setAttribute('fill', isFav ? 'currentColor' : 'none');
+    if (el.tvkFavIcon) el.tvkFavIcon.setAttribute('fill', isFav ? 'currentColor' : 'none');
+    if (el.btnTvkFav) {
+      el.btnTvkFav.classList.toggle('active', isFav);
+      el.btnTvkFav.setAttribute('aria-pressed', String(isFav));
+      el.btnTvkFav.disabled = !state.currentTrack;
     }
-    const isFav = state.favorites.some(f => isSameSong(f, state.currentTrack));
-    el.favIcon.setAttribute('fill', isFav ? 'currentColor' : 'none');
   }
 
   function updateFavoritesBadge() {
@@ -8126,6 +8870,51 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (el.favoritesSearchInput) {
     el.favoritesSearchInput.addEventListener('input', () => renderFavoritesView());
   }
+
+  // Favorites: Select and Download move into one overflow menu, and the toolbar (search + sort + overflow)
+  // slides out of the way when the list scrolls down, then comes back on the first upward swipe.
+  (function setupFavoritesToolbar() {
+    const more = document.getElementById('btn-favorites-more');
+    if (more) {
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openActionMenu(more, [
+          { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-favorites'); if (b) b.click(); } },
+          { label: 'Download all', run: () => { const b = document.getElementById('btn-download-favorites'); if (b) b.click(); } }
+        ]);
+      });
+    }
+    const toolbar = document.getElementById('favorites-toolbar');
+    const view = document.getElementById('view-favorites');
+    const main = document.querySelector('.main-content');
+    if (!toolbar || !view || !main) return;
+    let lastTop = main.scrollTop;
+    let ticking = false;
+    const update = () => {
+      ticking = false;
+      if (!view.classList.contains('active')) {
+        toolbar.classList.remove('fav-toolbar-hidden');
+        lastTop = main.scrollTop;
+        return;
+      }
+      const top = main.scrollTop;
+      const delta = top - lastTop;
+      if (Math.abs(delta) < 6) return;
+      const busy = (document.activeElement && toolbar.contains(document.activeElement))
+        || Boolean(toolbar.querySelector('.sort-dropdown.open'));
+      if (top <= 24 || delta < 0) toolbar.classList.remove('fav-toolbar-hidden');
+      else if (delta > 0 && !busy) toolbar.classList.add('fav-toolbar-hidden');
+      lastTop = top;
+    };
+    main.addEventListener('scroll', () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(update);
+    }, { passive: true });
+    new MutationObserver(() => {
+      if (view.classList.contains('active')) toolbar.classList.remove('fav-toolbar-hidden');
+    }).observe(view, { attributes: true, attributeFilter: ['class'] });
+  })();
 
   // Sort menus of Favorites and playlists: a Material dropdown in front of the <select> (still the value), with
   // the select's options, so the list of orders stays in one place (track-sort.js does the sorting)
@@ -8184,6 +8973,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.favoritesSort.value = getTrackSortMode('favorites');
     setupSortDropdown('favorites', el.favoritesSort);
   }
+
+  // Sorting the Albums tab, the playlists list and the Artists tab (#19); track-sort.js does the sorting.
+  // Kept per view in localStorage. (var and function declarations: the lists can render before this line runs)
+  var LIBRARY_SORT_KEYS = { albums: 'muriel_albums_sort', playlists: 'muriel_playlists_sort', artists: 'muriel_artists_sort' };
+  function getLibrarySort(kind) {
+    let v = null;
+    try { v = localStorage.getItem((LIBRARY_SORT_KEYS || {})[kind] || ''); } catch (e) {}
+    return librarySortMode(kind, v);
+  }
+  function sortedLibrary(kind, items) {
+    return sortLibrary(kind, items, getLibrarySort(kind), kind === 'artists' ? { plays: (a) => artistPlays(a.name) } : {});
+  }
+  ['albums', 'playlists', 'artists'].forEach((kind) => {
+    const sel = document.getElementById(`${kind}-sort`);
+    if (!sel) return;
+    sel.value = getLibrarySort(kind);
+    sel.addEventListener('change', () => {
+      try { localStorage.setItem(LIBRARY_SORT_KEYS[kind], librarySortMode(kind, sel.value)); } catch (e) {}
+      syncSortDropdown(kind);
+      if (kind === 'albums') renderSavedAlbums();
+      else if (kind === 'artists') renderArtistsTab();
+      else renderPlaylistsList();
+    });
+    setupSortDropdown(kind, sel);
+  });
 
   function renderHistoryView() {
     if (el.historyTracksList) renderTracks(el.historyTracksList, state.history, 'history');
@@ -8289,10 +9103,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.localSearchInput.addEventListener('input', () => renderLocalView(false));
   }
 
-  async function importLocalFiles() {
+  async function importLocalFiles(opts) {
     if (!window.electronAPI || !window.electronAPI.importAudioFiles) return;
     try {
-      const items = await window.electronAPI.importAudioFiles();
+      const items = await window.electronAPI.importAudioFiles(opts && opts.folder ? { folder: true } : undefined);
       if (!items || items.length === 0) return;
 
       await fetch(`http://127.0.0.1:${state.serverPort}/api/library-add`, {
@@ -8360,16 +9174,135 @@ document.addEventListener('DOMContentLoaded', async () => {
     return url;
   }
 
+  // Cover art (#18). Many saved songs (synced, restored, imported, matched on play) carry no thumbnail or a
+  // dead one, and the row just hid its picture. A YouTube song's cover can always be derived from its id, and a
+  // failed picture walks down a list of candidates instead of giving up.
+  const YT_THUMB = /^https?:\/\/i\d?\.ytimg\.com\/vi(?:_webp)?\/([\w-]{11})\//;
+  function trackYoutubeId(track) {
+    if (!track) return '';
+    const p = String(track.platform || '').toLowerCase();
+    if (p === 'local' || p === 'soundcloud' || p === 'sc') return '';
+    const m = String(track.url || track.videoId || '').match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/)|youtu\.be\/)([\w-]{11})/);
+    if (m) return m[1];
+    if (/^[\w-]{11}$/.test(String(track.videoId || ''))) return track.videoId;
+    if ((p === 'youtube' || p === 'ytmusic' || p === 'yt' || (!p && !track.url)) && /^[\w-]{11}$/.test(String(track.id || ''))) return String(track.id);
+    return '';
+  }
+  // other sizes of a cover we already have (YouTube frames, SoundCloud artwork)
+  function artVariants(url) {
+    if (!url || typeof url !== 'string') return [];
+    const yt = url.match(YT_THUMB);
+    if (yt) return ['hqdefault', 'mqdefault', 'default'].map((s) => `https://i.ytimg.com/vi/${yt[1]}/${s}.jpg`);
+    if (/sndcdn\.com\/.*-(t500x500|original|large|crop|t300x300)\./.test(url)) return ['t500x500', 'large', 't300x300'].map((s) => url.replace(/-(t500x500|original|large|crop|t300x300)\./, `-${s}.`));
+    return [];
+  }
+  function derivedTrackArt(track) {
+    const id = trackYoutubeId(track);
+    return id ? artVariants(`https://i.ytimg.com/vi/${id}/hqdefault.jpg`) : [];
+  }
+  // every picture worth trying for a song, best first
+  function trackArtCandidates(track) {
+    if (!track) return [];
+    const out = [];
+    const add = (u) => { if (u && typeof u === 'string' && !out.includes(u)) out.push(u); };
+    [getTrackArt(track).cover, track.localThumbnail, track.thumbnail, track.cover, track.image, track.artworkUrl].forEach((u) => { add(u); artVariants(u).forEach(add); });
+    derivedTrackArt(track).forEach(add);
+    // last: the same picture through the in-app server (kept on disk, so a blocked or dead cover host costs one
+    // try), which falls back to the song's iTunes cover by artist and title. Computers only.
+    if (!isPhoneApp && state.serverPort && track.title) {
+      const first = out.find((u) => /^https?:\/\//.test(u) && !u.startsWith('http://127.0.0.1')) || '';
+      add(tokenUrl(`http://127.0.0.1:${state.serverPort}/api/image-proxy?url=${encodeURIComponent(first)}&artist=${encodeURIComponent(track.artist || '')}&title=${encodeURIComponent(track.title)}`));
+    }
+    return out;
+  }
+
+  // next cover to try in a player <img> whose current one failed ('' when none is left)
+  function nextPlayerArt(track, img) {
+    if (!img || !track) return '';
+    if (img.__artTrack !== track) { img.__artTrack = track; img.__artTried = new Set(); }
+    const cur = img.getAttribute('src') || '';
+    img.__artTried.add(cur);
+    const next = trackArtCandidates(track).concat(artVariants(cur)).find((u) => !img.__artTried.has(u));
+    if (!next) return '';
+    img.__artTried.add(next);
+    img.style.display = 'block';
+    img.src = next;
+    return next;
+  }
+
   function getTrackThumbUrl(track) {
     if (!track) return '';
     const o = getTrackArt(track).cover;
     if (o) return o;
     if (track.localThumbnail) return track.localThumbnail;
-    if (track.id && state.serverPort) {
-      const cleanId = String(track.id).replace(/[^a-zA-Z0-9_-]/g, '_');
-    }
-    return track.thumbnail || track.cover || track.image || track.artworkUrl || '';
+    return track.thumbnail || track.cover || track.image || track.artworkUrl || derivedTrackArt(track)[0] || '';
   }
+
+  // A song's cover that loaded in place of its saved (missing or dead) one is saved with the song.
+  function rememberTrackArt(canonicalId, url) {
+    if (!canonicalId || !/^https:\/\//.test(url || '')) return;
+    const fix = (arr) => {
+      let changed = false;
+      (arr || []).forEach((t) => {
+        if (t && t.thumbnail !== url && getTrackCanonicalId(t) === canonicalId && !getTrackArt(t).cover) { t.thumbnail = url; changed = true; }
+      });
+      return changed;
+    };
+    try {
+      if (fix(state.favorites)) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+      if (fix(state.history)) localStorage.setItem('devsize_history', JSON.stringify(state.history));
+      let pl = false;
+      (state.playlists || []).forEach((p) => { if (p && fix(p.tracks)) pl = true; });
+      if (pl) localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+      if (state.currentTrack && getTrackCanonicalId(state.currentTrack) === canonicalId && !getTrackArt(state.currentTrack).cover) state.currentTrack.thumbnail = url;
+    } catch (e) {}
+  }
+
+  // onerror of a cover <img>: next candidate (data-full, then data-art, then other sizes), hidden when none is left
+  function nextTrackArt(img) {
+    if (!img) return false;
+    const tried = img.__artTried || (img.__artTried = new Set());
+    const cur = img.getAttribute('src') || '';
+    tried.add(cur);
+    let list = [];
+    try { list = JSON.parse(img.dataset.art || '[]'); } catch (e) {}
+    if (img.dataset.full) list.unshift(img.dataset.full);
+    list = list.concat(artVariants(cur));
+    const next = list.find((u) => u && !tried.has(u));
+    if (!next) { img.style.visibility = 'hidden'; return false; }
+    tried.add(next);
+    const row = img.closest && img.closest('[data-canonical-id]');
+    if (row && !img.__artRemember) {
+      img.__artRemember = true;
+      img.addEventListener('load', () => {
+        const ok = img.getAttribute('src');
+        if (img.naturalWidth > 0 && ok && ok !== img.dataset.saved) rememberTrackArt(row.dataset.canonicalId, ok);
+      });
+    }
+    img.style.visibility = '';
+    img.src = next;
+    return true;
+  }
+  window.murielArtNext = nextTrackArt;
+
+  // Old saves: give YouTube songs without a cover the one derived from their id (no network), once, when idle.
+  function backfillTrackArt() {
+    const fill = (arr) => {
+      let changed = false;
+      (arr || []).forEach((t) => {
+        if (t && !t.thumbnail && !t.localThumbnail) { const d = derivedTrackArt(t)[0]; if (d) { t.thumbnail = d; changed = true; } }
+      });
+      return changed;
+    };
+    try {
+      if (fill(state.favorites)) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+      if (fill(state.history)) localStorage.setItem('devsize_history', JSON.stringify(state.history));
+      let pl = false;
+      (state.playlists || []).forEach((p) => { if (p && fill(p.tracks)) pl = true; });
+      if (pl) localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+    } catch (e) {}
+  }
+  (window.requestIdleCallback || ((f) => setTimeout(f, 3000)))(backfillTrackArt);
 
   function renderPlaylistCover(container, playlist, size = 64) {
     if (!container) return;
@@ -8381,10 +9314,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       container.classList.remove('cover-single', 'cover-empty');
       const tracks = (playlist && playlist.tracks) ? playlist.tracks : [];
       let firstThumb = null;
+      let firstTrack = null;
       for (const t of tracks) {
         const src = getTrackThumbUrl(t);
         if (src) {
           firstThumb = src;
+          firstTrack = t;
           break;
         }
       }
@@ -8397,7 +9332,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         img.alt = '';
         img.loading = 'lazy';
         img.style.objectFit = 'cover';
+        img.dataset.art = JSON.stringify(trackArtCandidates(firstTrack));
         img.onerror = () => {
+          if (nextTrackArt(img)) return;
           container.classList.remove('cover-single');
           container.classList.add('cover-empty');
           container.innerHTML = `<svg width="${Math.round(size * 0.45)}" height="${Math.round(size * 0.45)}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
@@ -8474,7 +9411,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       el.playlistsList.appendChild(emptyMsg);
       return;
     }
-    state.playlists.forEach(pl => {
+    sortedLibrary('playlists', state.playlists).forEach(pl => {
       const item = document.createElement('div');
       item.className = 'playlist-item';
       item.dataset.playlistId = pl.id;
@@ -8666,9 +9603,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     const onPointerUp = (e) => {
-      if (e && activePointerId !== null && e.pointerId !== activePointerId) return;
+      // touchmove/touchcancel have no pointerId; only enforce it for real pointer events
+      if (e && typeof e.pointerId === 'number' && activePointerId !== null && e.pointerId !== activePointerId) return;
       // the browser took the gesture over (it began a scroll): put the row back where it was
-      if (e && e.type === 'pointercancel') targetIndex = startIndex;
+      if (e && (e.type === 'pointercancel' || e.type === 'touchcancel')) targetIndex = startIndex;
       clearTimeout(pressTimer);
       clearInterval(autoScrollTimer);
       window.removeEventListener('pointermove', onPointerMove);
@@ -8750,8 +9688,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     container.addEventListener('pointerdown', onPointerDown);
-    // once a held row is lifted the finger moves it, so the list must not scroll underneath
-    container.addEventListener('touchmove', (e) => { if (isDragging) e.preventDefault(); }, { passive: false });
+    // Touch events fire earlier and more reliably than pointermove on iOS. A finger that moves is scrolling
+    // the list, not holding a row: cancel the hold timer before startDrag can capture the row and swallow the
+    // scroll. Once a row is really lifted, keep the list still underneath the finger.
+    container.addEventListener('touchmove', (e) => {
+      const t = e.touches && e.touches[0];
+      if (!t) return;
+      if (!isDragging) {
+        if (draggedItem && Math.hypot(t.clientX - startX, t.clientY - startY) > 8) {
+          clearTimeout(pressTimer);
+          onPointerUp(e);
+        }
+        return;
+      }
+      e.preventDefault();
+    }, { passive: false });
+    container.addEventListener('touchcancel', (e) => { if (draggedItem) onPointerUp(e); }, { passive: true });
   }
 
   initListReordering({
@@ -8761,7 +9713,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const [moved] = state.playlists.splice(fromIdx, 1);
       state.playlists.splice(toIdx, 0, moved);
       localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
-    }
+    },
+    // dragging moves playlists in the custom order: not while the list shows another order
+    isFilterActive: () => getLibrarySort('playlists') !== 'custom'
   });
 
   initListReordering({
@@ -8838,6 +9792,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (el.playlistSort) { el.playlistSort.value = getTrackSortMode('playlist'); syncSortDropdown('playlist'); }
     renderPlaylistDescription(pl);
     renderPlaylistDuplicateButton(pl);
+    updatePlaylistFavAllButton();
     const totalSec = (pl.tracks || []).reduce((acc, t) => acc + (t.duration || 0), 0);
     const durStr = totalSec > 0 ? ` • ${formatDuration(totalSec)}` : '';
     if (el.playlistDetailCount) el.playlistDetailCount.textContent = (query ? `${filtered.length} of ${pl.tracks.length} tracks` : `${pl.tracks.length} tracks`) + durStr;
@@ -8941,7 +9896,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) { window.prompt(T('Copy this link'), link); }
   }
   const btnSharePlaylist = document.getElementById('btn-share-playlist');
-  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', () => sharePlaylist(state.playlists.find(p => p.id === state.currentPlaylistId)));
+  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+    openActionMenu(btnSharePlaylist, [
+      { label: 'Share playlist link', run: () => sharePlaylist(pl) },
+      { label: 'Export as JSON file', run: () => { const b = document.getElementById('btn-export-playlist'); if (b) b.click(); } }
+    ]);
+  });
 
   // a playlist someone shared: from a muriel://playlist link, the search bar or the link importer
   let importingShare = '';
@@ -8977,35 +9939,97 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnShufflePlaylist = document.getElementById('btn-shuffle-playlist');
   if (btnShufflePlaylist) btnShufflePlaylist.addEventListener('click', () => playOpenPlaylist(true));
 
+  // How many songs of a playlist are already liked, so the header heart can add the rest or take them back.
+  function playlistFavoriteStats(pl) {
+    const tracks = (pl && Array.isArray(pl.tracks)) ? pl.tracks : [];
+    let liked = 0;
+    tracks.forEach((t) => { if (state.favorites.some(f => isSameSong(f, t))) liked++; });
+    return { total: tracks.length, liked, missing: tracks.length - liked, all: tracks.length > 0 && liked === tracks.length };
+  }
+
+  function updatePlaylistFavAllButton() {
+    const btn = document.getElementById('btn-fav-all-playlist');
+    if (!btn) return;
+    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+    const stats = playlistFavoriteStats(pl);
+    const svg = btn.querySelector('svg');
+    if (svg) svg.setAttribute('fill', stats.all ? 'currentColor' : 'none');
+    const label = T(stats.all ? 'Remove all from favorites' : 'Add all to favorites');
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.classList.toggle('is-favorited', stats.all);
+  }
+
   (function setupFavAllPlaylist() {
     const btn = document.getElementById('btn-fav-all-playlist');
     if (!btn) return;
-    btn.addEventListener('click', () => {
-      const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+    const modal = document.getElementById('favorites-all-modal');
+    const titleEl = document.getElementById('favorites-all-title');
+    const msgEl = document.getElementById('favorites-all-msg');
+    const confirmBtn = document.getElementById('btn-confirm-favorites-all');
+    const cancelBtn = document.getElementById('btn-cancel-favorites-all');
+    let pending = 'add';
+
+    const currentPlaylist = () => state.playlists.find(p => p.id === state.currentPlaylistId);
+
+    const apply = () => {
+      const pl = currentPlaylist();
       if (!pl || !pl.tracks) return;
-      let added = 0;
-      for (let i = pl.tracks.length - 1; i >= 0; i--) {
-        const track = pl.tracks[i];
-        if (!state.favorites.some(f => isSameSong(f, track))) {
-          state.favorites.unshift(stampAddedAt(track));
-          added++;
+      const stats = playlistFavoriteStats(pl);
+      if (pending === 'remove') {
+        state.favorites = state.favorites.filter(f => !pl.tracks.some(t => isSameSong(f, t)));
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+        showToast(Tf('Removed {0} songs from favorites', stats.liked), 'info');
+      } else {
+        let added = 0;
+        for (let i = pl.tracks.length - 1; i >= 0; i--) {
+          const track = pl.tracks[i];
+          if (!state.favorites.some(f => isSameSong(f, track))) {
+            state.favorites.unshift(stampAddedAt(track));
+            added++;
+          }
         }
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+        showToast(added === 1 ? Tm('Added 1 song to favorites') : Tf('Added {0} songs to favorites', added), 'success');
       }
-      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
       updateFavoritesBadge();
       updateFavoriteIcon();
-      btn.title = Tf('{0} added to favorites', added);
-      const old = btn.style.color;
-      btn.style.color = '#ff6b8a';
-      setTimeout(() => { btn.style.color = old; btn.title = T('Add all to favorites'); }, 2500);
+      if (state.currentView === 'favorites') renderFavoritesView();
+      if (state.currentView === 'playlist-detail') openPlaylistDetail(state.currentPlaylistId);
+      updatePlaylistFavAllButton();
+    };
+
+    btn.addEventListener('click', () => {
+      const pl = currentPlaylist();
+      const stats = playlistFavoriteStats(pl);
+      if (!stats.total) return;
+      pending = stats.all ? 'remove' : 'add';
+      const name = (pl && pl.name) || T('this playlist');
+      if (titleEl) titleEl.textContent = T(pending === 'remove' ? 'Remove all from favorites' : 'Add all to favorites');
+      if (msgEl) {
+        msgEl.textContent = pending === 'remove'
+          ? Tf('Remove all {0} songs in "{1}" from your favorites?', stats.total, name)
+          : (stats.liked > 0
+            ? Tf('Add the remaining {0} of {1} songs in "{2}" to your favorites?', stats.missing, stats.total, name)
+            : Tf('Add all {0} songs in "{1}" to your favorites?', stats.total, name));
+      }
+      if (confirmBtn) {
+        confirmBtn.textContent = T(pending === 'remove' ? 'Remove' : 'Add');
+        confirmBtn.classList.toggle('danger', pending === 'remove');
+      }
+      if (modal) openModal(modal);
+      else if (window.confirm(msgEl ? msgEl.textContent : name)) apply();
     });
+
+    if (cancelBtn && modal) cancelBtn.addEventListener('click', () => closeModal(modal));
+    if (confirmBtn && modal) confirmBtn.addEventListener('click', () => { closeModal(modal); apply(); });
   })();
 
   (function setupPlaylistRename() {
     const btn = document.getElementById('btn-rename-playlist');
     const titleEl = document.getElementById('playlist-detail-title');
     if (!btn || !titleEl) return;
-    btn.addEventListener('click', () => {
+    const startRename = () => {
       const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
       if (!pl || titleEl.querySelector('input')) return;
       const input = document.createElement('input');
@@ -9034,6 +10058,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         else if (e.key === 'Escape') finish(false);
       });
       input.addEventListener('blur', () => finish(true));
+    };
+    btn.addEventListener('click', startRename);
+    // the visible playlist name is the rename control now, instead of another header button
+    titleEl.classList.add('playlist-title-editable');
+    titleEl.title = T('Tap to rename');
+    titleEl.setAttribute('role', 'button');
+    titleEl.tabIndex = 0;
+    titleEl.addEventListener('click', (e) => { e.stopPropagation(); startRename(); });
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startRename(); }
+    });
+  })();
+
+  // Playlist overflow: Select tracks, duplicate cleanup and the manual/sort order live here instead of the
+  // already crowded action row.
+  (function setupPlaylistMoreMenu() {
+    const btn = document.getElementById('btn-playlist-more');
+    if (!btn) return;
+    const sortLabel = () => {
+      if (!el.playlistSort || el.playlistSort.selectedIndex < 0) return T('Manual order');
+      return el.playlistSort.options[el.playlistSort.selectedIndex].textContent;
+    };
+    const openSortMenu = () => {
+      if (!el.playlistSort) return;
+      openActionMenu(btn, [...el.playlistSort.options].map((o) => ({
+        label: o.textContent,
+        checked: o.value === el.playlistSort.value,
+        run: () => {
+          if (el.playlistSort.value === o.value) return;
+          el.playlistSort.value = o.value;
+          el.playlistSort.dispatchEvent(new Event('change'));
+        }
+      })));
+    };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const items = [
+        { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-playlist'); if (b) b.click(); } },
+        { separator: true },
+        { label: `Sort playlist: ${sortLabel()}`, run: openSortMenu }
+      ];
+      const dup = el.btnDedupePlaylist;
+      const dupCount = dup ? Number(dup.dataset.duplicates || 0) : 0;
+      if (dupCount > 0 && dup) {
+        items.splice(2, 0, {
+          label: dupCount === 1 ? 'Remove 1 duplicate' : `Remove ${dupCount} duplicates`,
+          run: () => dup.click()
+        });
+      }
+      openActionMenu(btn, items);
     });
   })();
 
@@ -9059,6 +10133,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateFavoritesBadge();
       updateFavoriteIcon();
       showToast(!added ? Tm('Already in favorites') : added === 1 ? Tm('Added 1 track to favorites') : Tm('Added {0} tracks to favorites', added), added ? 'success' : 'info');
+    });
+    on('multi-select-radio', () => {
+      const picked = Array.from(multiSel.tracks.values());
+      if (!picked.length) return;
+      if (picked.length > 5) showToast(Tm('Radio uses the first 5 selected songs'), 'info');
+      exitMultiSelect();
+      startSongRadio(picked);
     });
     on('multi-select-add', () => {
       const picked = Array.from(multiSel.tracks.values());
@@ -9314,6 +10395,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (el.viewSettings) el.viewSettings.classList.add('active');
             if (el.navSettings) el.navSettings.classList.add('active');
             enterSettings();
+            renderBlockedSettings(); // a linked device may have changed it
             updateOfflineStorageUI();
             updateMusicFolderUI();
   updateDownloadFolderUI();
@@ -9588,6 +10670,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (el.navSettings) el.navSettings.addEventListener('click', () => switchView('settings'));
 
   if (el.btnAddLocalFiles) el.btnAddLocalFiles.addEventListener('click', () => importLocalFiles());
+  // a whole folder (and its subfolders) at once: computers only, phones pick files
+  const btnAddLocalFolder = document.getElementById('btn-add-local-folder');
+  if (btnAddLocalFolder && !isPhoneApp && window.electronAPI && window.electronAPI.importAudioFiles) {
+    btnAddLocalFolder.hidden = false;
+    btnAddLocalFolder.addEventListener('click', () => importLocalFiles({ folder: true }));
+  }
   if (el.btnAddLocalFilesEmpty) el.btnAddLocalFilesEmpty.addEventListener('click', () => importLocalFiles());
 
   if (el.btnAutoRemix) {
@@ -9957,11 +11045,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.isShuffle = !!on;
     localStorage.setItem('muriel_shuffle', state.isShuffle ? '1' : '0');
     if (el.btnShuffle) el.btnShuffle.classList.toggle('active', state.isShuffle);
+    if (el.btnTvkShuffle) {
+      el.btnTvkShuffle.classList.toggle('active', state.isShuffle);
+      el.btnTvkShuffle.setAttribute('aria-pressed', String(state.isShuffle));
+    }
     window.dispatchEvent(new Event('muriel:modes')); // the phone's lock-screen / Dynamic Island buttons follow
   }
   if (el.btnShuffle) {
     el.btnShuffle.classList.toggle('active', state.isShuffle);
     el.btnShuffle.addEventListener('click', () => setShuffle(!state.isShuffle));
+  }
+  if (el.btnTvkShuffle) {
+    el.btnTvkShuffle.classList.toggle('active', state.isShuffle);
+    el.btnTvkShuffle.setAttribute('aria-pressed', String(state.isShuffle));
+    el.btnTvkShuffle.addEventListener('click', () => setShuffle(!state.isShuffle));
   }
 
   // one tap repeats the playlist, the next one the song (the icon gets a 1), the third turns repeat off
@@ -9976,11 +11073,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       el.btnRepeat.title = T(REPEAT_TITLES[state.repeatMode]);
       el.btnRepeat.setAttribute('aria-label', T(REPEAT_TITLES[state.repeatMode]));
     }
+    if (el.btnTvkRepeat) {
+      el.btnTvkRepeat.classList.toggle('active', state.repeatMode !== 'off');
+      el.btnTvkRepeat.classList.toggle('repeat-one', state.isRepeat);
+      el.btnTvkRepeat.title = T(REPEAT_TITLES[state.repeatMode]);
+      el.btnTvkRepeat.setAttribute('aria-label', T(REPEAT_TITLES[state.repeatMode]));
+      el.btnTvkRepeat.setAttribute('aria-pressed', String(state.repeatMode !== 'off'));
+    }
     window.dispatchEvent(new Event('muriel:modes'));
   }
+  setRepeatMode(state.repeatMode);
   if (el.btnRepeat) {
-    setRepeatMode(state.repeatMode);
     el.btnRepeat.addEventListener('click', () => setRepeatMode(({ off: 'all', all: 'one', one: 'off' })[state.repeatMode]));
+  }
+  if (el.btnTvkRepeat) {
+    el.btnTvkRepeat.addEventListener('click', () => setRepeatMode(({ off: 'all', all: 'one', one: 'off' })[state.repeatMode]));
   }
 
   window.toggleShuffle = () => el.btnShuffle && el.btnShuffle.click();
@@ -9993,32 +11100,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) {}
   }
 
+  function syncVolumeControls() {
+    if (el.volumeSlider) el.volumeSlider.value = String(state.volume);
+    if (el.tvkVolumeSlider) el.tvkVolumeSlider.value = String(state.volume);
+    if (el.volumeIcon) el.volumeIcon.classList.toggle('hidden', state.isMuted);
+    if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
+  }
+
+  function applyVolumeValue(value, { silent = false, keepMute = false } = {}) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) return;
+    state.volume = Math.max(0, Math.min(1, next));
+    if (!keepMute) state.isMuted = false;
+    syncVolumeControls();
+    persistVolumeState();
+    applyAudioSettings();
+    // iOS ignores <audio>.volume (the hardware buttons own it), so the header/karaoke bars move the
+    // system volume through MurielVolume (mobile/mobile-ui.js + MurielVolumePlugin in AppDelegate.swift).
+    // `silent` marks a value that came from iOS itself, which must not be written back.
+    if (!silent && window.MurielSystemVolume) window.MurielSystemVolume.set(state.volume);
+  }
+
+  function setVolumeFromSlider(slider) {
+    applyVolumeValue(slider && slider.value);
+  }
+
+  syncVolumeControls();
   if (el.volumeSlider) {
-    el.volumeSlider.value = String(state.volume);
-    if (state.isMuted) {
-      if (el.volumeIcon) el.volumeIcon.classList.add('hidden');
-      if (el.volumeMutedIcon) el.volumeMutedIcon.classList.remove('hidden');
-    }
-    el.volumeSlider.addEventListener('input', (e) => {
-      state.volume = parseFloat(e.target.value);
-      state.isMuted = false;
-      if (el.volumeIcon) el.volumeIcon.classList.remove('hidden');
-      if (el.volumeMutedIcon) el.volumeMutedIcon.classList.add('hidden');
-      persistVolumeState();
-      applyAudioSettings();
-    });
+    el.volumeSlider.addEventListener('input', (e) => setVolumeFromSlider(e.currentTarget));
+  }
+  if (el.tvkVolumeSlider) {
+    el.tvkVolumeSlider.addEventListener('input', (e) => setVolumeFromSlider(e.currentTarget));
   }
 
   if (el.btnVolumeMute) {
     el.btnVolumeMute.addEventListener('click', () => {
       state.isMuted = !state.isMuted;
-      if (state.isMuted) {
-        if (el.volumeIcon) el.volumeIcon.classList.add('hidden');
-        if (el.volumeMutedIcon) el.volumeMutedIcon.classList.remove('hidden');
-      } else {
-        if (el.volumeIcon) el.volumeIcon.classList.remove('hidden');
-        if (el.volumeMutedIcon) el.volumeMutedIcon.classList.add('hidden');
-      }
+      syncVolumeControls();
       persistVolumeState();
       applyAudioSettings();
     });
@@ -10513,8 +11631,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (el.customColorInput) {
-    el.customColorInput.addEventListener('input', (e) => {
-      state.themeAccent = e.target.value;
+    // on change too, not only input: some color pickers send only change, so the color was never saved (Riff 43.1)
+    const applyCustomAccent = (e) => {
+      if (!/^#[0-9a-f]{6}$/i.test(e.target.value || '')) return;
+      state.themeAccent = e.target.value.toLowerCase();
       localStorage.setItem('muriel_theme_accent', state.themeAccent);
       if (state.themeMode === 'auto') {
         const targetMode = currentEffectiveMode || 'dark';
@@ -10523,7 +11643,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       updateThemeFromState();
       if (el.themeSwatches) el.themeSwatches.forEach(sw => sw.classList.remove('active'));
-    });
+    };
+    el.customColorInput.addEventListener('input', applyCustomAccent);
+    el.customColorInput.addEventListener('change', applyCustomAccent);
   }
 
   if (el.sliderHue) {
@@ -10595,8 +11717,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Custom properties live on :root, so writing one invalidates the style of the whole document. On a phone
+  // that made these settings stutter while a value was dragged. Keep the label live but apply the newest value
+  // at most once per frame, and save to localStorage when the finger is lifted.
+  const sliderFrame = (apply) => {
+    let raf = 0;
+    let next;
+    return (value) => {
+      next = value;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        apply(next);
+      });
+    };
+  };
+
   if (el.sliderFontScale) {
+    const applyFontScale = sliderFrame((val) => {
+      if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
+      document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
+    });
     el.sliderFontScale.addEventListener('input', (e) => {
+      applyFontScale(parseInt(e.target.value, 10));
+    });
+    el.sliderFontScale.addEventListener('change', (e) => {
       const val = parseInt(e.target.value, 10);
       if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
       document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
@@ -10685,7 +11830,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, 50);
 
   if (el.sliderCornerRadius) {
+    const applyCornerRadius = sliderFrame((val) => {
+      if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
+      document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
+      document.documentElement.style.setProperty('--md-shape-corner-m', `${Math.max(0, val - 4)}px`);
+    });
     el.sliderCornerRadius.addEventListener('input', (e) => {
+      applyCornerRadius(parseInt(e.target.value, 10));
+    });
+    el.sliderCornerRadius.addEventListener('change', (e) => {
       const val = parseInt(e.target.value, 10);
       if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
       document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
@@ -10695,7 +11848,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (el.sliderUiAlpha) {
+    const applyUiAlpha = sliderFrame((val) => {
+      if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
+      document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
+    });
     el.sliderUiAlpha.addEventListener('input', (e) => {
+      applyUiAlpha(Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100)));
+    });
+    el.sliderUiAlpha.addEventListener('change', (e) => {
       const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
       if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
@@ -10716,7 +11876,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (el.sliderTextAlpha) {
+    const applyTextAlpha = sliderFrame((val) => {
+      if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
+      document.documentElement.style.setProperty('--text-alpha', `${val}%`);
+    });
     el.sliderTextAlpha.addEventListener('input', (e) => {
+      applyTextAlpha(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100)));
+    });
+    el.sliderTextAlpha.addEventListener('change', (e) => {
       const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
       if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--text-alpha', `${val}%`);
@@ -10962,7 +12129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
-  function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); }
+  function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); }
   function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
   function onBackgroundChanged(kind, enabled) {
     if (!getAdv('ui_alpha_auto', true)) return;
@@ -11042,11 +12209,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
     document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
 
+    const applyCoverBrightness = typeof sliderFrame === 'function' ? sliderFrame((v) => {
+      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
+      document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
+    }) : null;
+
     sliderCoverBgBrightness.addEventListener('input', (e) => {
       const v = parseInt(e.target.value, 10);
+      if (applyCoverBrightness) applyCoverBrightness(v);
+      else {
+        if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
+        document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
+      }
+    });
+    sliderCoverBgBrightness.addEventListener('change', (e) => {
+      const v = parseInt(e.target.value, 10);
       if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
-      localStorage.setItem('muriel_cover_bg_brightness', String(v));
       document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
+      localStorage.setItem('muriel_cover_bg_brightness', String(v));
     });
   }
 
@@ -11344,7 +12524,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const advButtons = document.querySelectorAll('.effect-switch-btn[data-adv]');
   advButtons.forEach(btn => {
     const key = btn.dataset.adv;
-    const defaultVal = (key === 'reduce_motion' || key === 'mesh_gradient' || key === 'glass_blur' || key === 'mesh_cover_color' || key === 'clip_fx') ? false : true;
+    const defaultVal = key === 'reduce_motion' ? systemPrefersReducedMotion() : (key === 'mesh_gradient' || key === 'glass_blur' || key === 'mesh_cover_color' || key === 'clip_fx') ? false : true;
     const currentVal = getAdv(key, defaultVal);
     btn.classList.toggle('active', currentVal);
 
@@ -11539,6 +12719,97 @@ document.addEventListener('DOMContentLoaded', async () => {
     Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
     input.addEventListener('input', onChange);
   }
+  // On iOS a range input only starts dragging when the finger lands on the knob; touching the track just
+  // jumps there. Move the value ourselves for touches anywhere on the bar, so the whole bar drags.
+  // The move/up listeners live on window: an element-only (or captured) drag stops reporting as soon as the
+  // finger leaves the bar, which made the value freeze and left the minimums (0 / 20 / 30) out of reach.
+  function enableRangeDragAnywhere(input) {
+    let dragKind = null; // 'touch' | 'pointer'
+    let pointerId = null;
+    let removeWindowListeners = null;
+    const isVolume = () => input.classList.contains('volume-range');
+    const valueFromX = (clientX) => {
+      const rect = input.getBoundingClientRect();
+      if (!rect.width) return null;
+      const min = input.min === '' ? 0 : parseFloat(input.min);
+      const max = input.max === '' ? 100 : parseFloat(input.max);
+      if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
+      let value = min + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (max - min);
+      const step = parseFloat(input.step);
+      if (Number.isFinite(step) && step > 0) {
+        value = min + Math.round((value - min) / step) * step;
+        const decimals = (String(input.step).split('.')[1] || '').length;
+        value = Number(value.toFixed(Math.min(decimals, 10)));
+      }
+      return Math.max(min, Math.min(max, value));
+    };
+    const apply = (clientX) => {
+      const value = valueFromX(clientX);
+      if (value === null || Number(input.value) === value) return;
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const finish = () => {
+      if (!dragKind) return;
+      dragKind = null;
+      pointerId = null;
+      input.classList.remove('sl-dragging');
+      if (removeWindowListeners) { removeWindowListeners(); removeWindowListeners = null; }
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      if (isVolume() && window.MurielSystemVolume && window.MurielSystemVolume.end) window.MurielSystemVolume.end();
+    };
+    const onTouchMove = (e) => {
+      if (dragKind !== 'touch') return;
+      const touch = e.touches && e.touches[0];
+      if (!touch) return;
+      e.preventDefault(); // keep the page from scrolling while the bar is being dragged
+      apply(touch.clientX);
+    };
+    const onTouchEnd = () => { if (dragKind === 'touch') finish(); };
+    const onPointerMove = (e) => {
+      if (dragKind !== 'pointer' || e.pointerId !== pointerId) return;
+      e.preventDefault();
+      apply(e.clientX);
+    };
+    const onPointerEnd = (e) => {
+      if (dragKind !== 'pointer' || e.pointerId !== pointerId) return;
+      finish();
+    };
+    const begin = (kind) => {
+      dragKind = kind;
+      input.classList.add('sl-dragging');
+      if (isVolume() && window.MurielSystemVolume && window.MurielSystemVolume.begin) window.MurielSystemVolume.begin();
+      window.addEventListener('touchmove', onTouchMove, { passive: false });
+      window.addEventListener('touchend', onTouchEnd);
+      window.addEventListener('touchcancel', onTouchEnd);
+      window.addEventListener('pointermove', onPointerMove, { passive: false });
+      window.addEventListener('pointerup', onPointerEnd);
+      window.addEventListener('pointercancel', onPointerEnd);
+      removeWindowListeners = () => {
+        window.removeEventListener('touchmove', onTouchMove, { passive: false });
+        window.removeEventListener('touchend', onTouchEnd);
+        window.removeEventListener('touchcancel', onTouchEnd);
+        window.removeEventListener('pointermove', onPointerMove, { passive: false });
+        window.removeEventListener('pointerup', onPointerEnd);
+        window.removeEventListener('pointercancel', onPointerEnd);
+      };
+    };
+    // Touch events are used for fingers (reliable on iOS even when the finger leaves the control) and pointer
+    // events only for a pen. The mouse already drags natively from anywhere, so leave it alone.
+    input.addEventListener('touchstart', (e) => {
+      if (dragKind || e.touches.length !== 1) return;
+      e.preventDefault();
+      begin('touch');
+      apply(e.touches[0].clientX);
+    }, { passive: false });
+    input.addEventListener('pointerdown', (e) => {
+      if (dragKind || e.pointerType === 'mouse' || e.pointerType === 'touch') return;
+      e.preventDefault();
+      pointerId = e.pointerId;
+      begin('pointer');
+      apply(e.clientX);
+    });
+  }
   function enhanceSliders(root) {
     (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
       if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
@@ -11554,12 +12825,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
       };
       watchSliderValue(input, sync);
+      enableRangeDragAnywhere(input);
       sync();
     });
   }
   enhanceSliders();
   let sliderRaf = 0;
-  new MutationObserver(() => { if (sliderRaf) return; sliderRaf = requestAnimationFrame(() => { sliderRaf = 0; enhanceSliders(); }); }).observe(document.body, { childList: true, subtree: true });
+  // text-only changes (the playbar clock, counters) can't add a slider or a switch: skip the document scan for them
+  const addsElements = (muts) => muts.some((m) => Array.prototype.some.call(m.addedNodes, (n) => n.nodeType === 1));
+  new MutationObserver((muts) => { if (sliderRaf || !addsElements(muts)) return; sliderRaf = requestAnimationFrame(() => { sliderRaf = 0; enhanceSliders(); }); }).observe(document.body, { childList: true, subtree: true });
 
   (function initHueSegments() {
     const input = document.getElementById('slider-theme-hue');
@@ -11721,7 +12995,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const audio = el.nativeAudio;
     const dur = audio && isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
     const p = dur ? Math.min(1, Math.max(0, audio.currentTime / dur)) : 0;
-    const primary = (getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary') || '#d0bcff').trim();
+    // the theme color is cached and refreshed on theme changes, like the scrubber's: no style read per frame
+    if (!cachedPrimaryColor) refreshCachedThemeColors();
+    const primary = cachedPrimaryColor || '#d0bcff';
     const STEPS = 240;
     const ringPoint = (phi, wave) => {
       const r = radiusAt(phi - rot) + RING_GAP + RING_W / 2 + wave;
@@ -12502,7 +13778,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
   let swRaf = 0;
-  new MutationObserver(() => { if (swRaf) return; swRaf = requestAnimationFrame(() => { swRaf = 0; decorateSwitches(); }); }).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver((muts) => { if (swRaf || !addsElements(muts)) return; swRaf = requestAnimationFrame(() => { swRaf = 0; decorateSwitches(); }); }).observe(document.body, { childList: true, subtree: true });
   decorateSwitches();
 
   const settingWinMediaKeys = document.getElementById('setting-win-media-keys');
@@ -12515,13 +13791,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     settingWinMediaKeys.style.display = isWindows ? '' : 'none';
   }
 
-  const savedWinMediaKeys = localStorage.getItem('muriel_global_media_keys') !== 'false';
+  // a new key, off by default: the old one was on for everyone, which hid Muriel from the Windows media overlay
+  const savedWinMediaKeys = localStorage.getItem('muriel_win_global_media_keys') === 'true';
   if (btnWinMediaKeys) {
     btnWinMediaKeys.classList.toggle('active', savedWinMediaKeys);
     btnWinMediaKeys.addEventListener('click', () => {
       const next = !btnWinMediaKeys.classList.contains('active');
       btnWinMediaKeys.classList.toggle('active', next);
-      localStorage.setItem('muriel_global_media_keys', next ? 'true' : 'false');
+      localStorage.setItem('muriel_win_global_media_keys', next ? 'true' : 'false');
       if (window.electronAPI && window.electronAPI.setMediaKeys) {
         window.electronAPI.setMediaKeys(next);
       }
@@ -12965,9 +14242,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function adjustVolume(delta) {
     state.volume = Math.max(0, Math.min(1, Math.round((state.volume + delta) * 100) / 100));
     state.isMuted = false;
-    if (el.volumeSlider) el.volumeSlider.value = state.volume;
-    if (el.volumeIcon) el.volumeIcon.classList.remove('hidden');
-    if (el.volumeMutedIcon) el.volumeMutedIcon.classList.add('hidden');
+    syncVolumeControls();
     persistVolumeState();
     applyAudioSettings();
   }
@@ -13195,32 +14470,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
-  function tokenSimilarity(a, b) {
-    const A = new Set(normalizeForMatch(a).split(' ').filter(Boolean));
-    const B = new Set(normalizeForMatch(b).split(' ').filter(Boolean));
-    if (!A.size || !B.size) return 0;
-    let hit = 0;
-    A.forEach((t) => { if (B.has(t)) hit++; });
-    return hit / Math.max(A.size, B.size);
-  }
-  // a remix, cover or sped-up upload when Spotify has the original is the wrong song (same words as server.js)
-  const VERSION_WORDS = /\b(remix|sped[ -]?up|slowed|nightcore|reverb|8d|bass[ -]?boost(ed)?|cover|flip|mashup|instrumental|karaoke|loop|bootleg)\b/i;
-  function pickBestMatch(sp, results) {
-    let best = null;
-    let bestScore = 0;
-    const wantsVersion = VERSION_WORDS.test(sp.title || '');
-    for (const r of results) {
-      if (!wantsVersion && VERSION_WORDS.test(r.title || '')) continue;
-      const text = tokenSimilarity(`${sp.title} ${sp.artist}`, `${r.title} ${r.artist}`);
-      const titleSim = tokenSimilarity(sp.title, r.title);
-      const dDiff = sp.duration && r.duration ? Math.abs(sp.duration - r.duration) : 99;
-      const durationOk = dDiff <= 3;
-      const score = text + (durationOk ? 0.6 : 0) + titleSim * 0.3;
-      const accept = (durationOk && text >= 0.2) || titleSim >= 0.6 || text >= 0.55;
-      if (accept && score > bestScore) { best = r; bestScore = score; }
-    }
-    return best;
-  }
+  // the artist has to match as well as the title, covers / live / sped-up uploads lose (#18; track-match.js)
+  const pickBestMatch = (sp, results) => window.trackMatch.pickBestMatch(sp, results);
 
   async function matchSpotifyTracks(list, onProgress) {
     const total = Array.isArray(list) ? list.length : 0;
@@ -13232,8 +14483,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (typeof onProgress === 'function') onProgress(0, total);
 
-    async function searchCandidates(q) {
-      const plat = state.platform || 'youtube';
+    async function searchCandidates(q, plat = state.platform || 'youtube') {
       const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=${plat}&limit=8`);
       const sData = await sRes.json();
       if (sData && sData.success && Array.isArray(sData.tracks)) {
@@ -13248,24 +14498,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       let lastErr = null;
       let hadCandidates = false;
 
-      const q1 = `${t.artist || ''} ${t.title || ''}`.trim();
-      if (q1) {
-        try {
-          const r1 = await searchCandidates(q1);
-          hadCandidates = true;
-          matched = pickBestMatch(t, r1);
-        } catch (e) {
-          lastErr = e.message || String(e);
-        }
-      }
-
-      if (!matched && !aborted && t.title) {
-        const q2 = String(t.title).trim();
-        if (q2 && q2 !== q1) {
+      // YouTube Music's song results (artist-tagged official audio) first, then the chosen source
+      const plat = state.platform || 'youtube';
+      const platforms = plat === 'soundcloud' ? ['soundcloud'] : Array.from(new Set(['ytmusic', plat]));
+      const queries = window.trackMatch.matchQueries(t);
+      const q1 = queries[0] || '';
+      outer: for (const p of platforms) {
+        for (const q of queries) {
+          if (aborted) break outer;
           try {
-            const r2 = await searchCandidates(q2);
+            const r = await searchCandidates(q, p);
             hadCandidates = true;
-            matched = pickBestMatch(t, r2);
+            matched = pickBestMatch(t, r);
+            if (matched) break outer;
           } catch (e) {
             lastErr = e.message || String(e);
           }
@@ -14863,7 +16108,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (platform === 'soundcloud') {
         linkImportUrl.placeholder = T('Paste a SoundCloud playlist or track link');
       } else if (platform === 'yandex') {
-        linkImportUrl.placeholder = T('Paste a Yandex Music playlist link');
+        linkImportUrl.placeholder = T('Paste a Yandex Music playlist, album or song link');
       } else {
         linkImportUrl.placeholder = T('Paste a YouTube, YouTube Music, SoundCloud or Yandex Music link');
       }
@@ -15081,7 +16326,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!el.downloadBtnText) return;
     if (downloadBatch) {
       const count = downloadBatch.tracks.length;
-      el.downloadBtnText.textContent = `Download ${count} track${count === 1 ? '' : 's'}`;
+      el.downloadBtnText.textContent = downloadBatch.retry ? Tf('Retry failed ({0})', count) : `Download ${count} track${count === 1 ? '' : 's'}`;
     } else {
       el.downloadBtnText.textContent = `Download ${selectedFormat.toUpperCase()}`;
     }
@@ -15175,7 +16420,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     trackToDownload = null;
-    downloadBatch = { name: playlist.name || 'Playlist', tracks };
+    downloadBatch = { name: playlist.name || 'Playlist', tracks, resolve: playlist.resolve, onProgress: playlist.onProgress, onDone: playlist.onDone };
     el.downloadModal.classList.add('batch-mode');
     showDownloadPane('download');
     const modalTitle = document.getElementById('download-modal-title');
@@ -15354,42 +16599,64 @@ document.addEventListener('DOMContentLoaded', async () => {
     return new Blob([arrayBuffer], { type: 'audio/wav' });
   }
 
+  // which of `tracks` are already in the Downloads folder (the offline cache doesn't count): an array of booleans
+  async function downloadedInFolder(tracks) {
+    const out = [];
+    for (let i = 0; i < tracks.length; i += 500) {
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/downloaded-status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filesOnly: true, tracks: tracks.slice(i, i + 500).map((t) => ({ title: t.title || '', artist: t.artist || '', id: String(t.id || '') })) }),
+      });
+      const data = await res.json();
+      if (!data || !data.success || !Array.isArray(data.downloaded)) throw new Error('downloaded-status failed');
+      out.push(...data.downloaded.map(Boolean));
+    }
+    return out;
+  }
+
   if (el.btnConfirmDownload) {
     el.btnConfirmDownload.addEventListener('click', async () => {
       if (downloadBatch) {
-        const tracks = downloadBatch.tracks;
+        const batch = downloadBatch;
         el.btnConfirmDownload.disabled = true;
-        let done = 0;
-        let failed = 0;
         let lastDir = null;
         // Cancel/X used to only hide the dialog while every song kept downloading
         const batchAbort = new AbortController();
         downloadAbort = batchAbort;
-        for (let i = 0; i < tracks.length; i++) {
-          if (batchAbort.signal.aborted) break;
-          const t = tracks[i];
-          if (el.downloadBtnText) el.downloadBtnText.textContent = `Downloading ${i + 1}/${tracks.length}`;
-          try {
-            const downloadUrl = `http://127.0.0.1:${state.serverPort}/api/download?url=${encodeURIComponent(t.url || '')}&id=${encodeURIComponent(t.id || '')}&title=${encodeURIComponent(t.title || '')}&artist=${encodeURIComponent(t.artist || '')}&format=${selectedFormat}&quality=${selectedQuality}`;
-            const res = await fetch(downloadUrl, { signal: batchAbort.signal });
-            const text = await res.text();
-            let data;
-            try {
-              data = JSON.parse(text);
-            } catch (e) {
-              throw new Error(text || 'server error');
-            }
-            if (!data.success) throw new Error(data.error || 'Failed to download');
-            done++;
-            if (data.directory) lastDir = data.directory;
-          } catch (err) {
-            if (batchAbort.signal.aborted) break;
-            failed++;
-            console.error('Download failed:', t.title || t.url || '', err.message);
+        const total = batch.tracks.length;
+        // songs already in the Downloads folder aren't downloaded again (#29)
+        const present = await downloadedInFolder(batch.tracks).catch(() => null);
+        const tracks = present ? batch.tracks.filter((_, i) => !present[i]) : batch.tracks;
+        const skipped = total - tracks.length;
+        const setProgress = (p) => {
+          if (el.downloadBtnText) el.downloadBtnText.textContent = Tf('Downloading {0}/{1}', Math.min(tracks.length, p.done + p.failed + 1), tracks.length) + (p.failed ? ` · ${Tf('{0} failed', p.failed)}` : '');
+          if (typeof batch.onProgress === 'function') batch.onProgress(p.done + p.failed, tracks.length);
+        };
+        setProgress({ done: 0, failed: 0 });
+        const downloadOne = async (t, { fresh }) => {
+          // an album's songs are found on YouTube first (the file keeps the album's title and artist)
+          let src = t;
+          if (typeof batch.resolve === 'function') {
+            const found = await batch.resolve(t).catch(() => null);
+            if (found && found.url) src = { ...t, url: found.url, id: found.id || t.id };
           }
-        }
+          const downloadUrl = `http://127.0.0.1:${state.serverPort}/api/download?url=${encodeURIComponent(src.url || '')}&id=${encodeURIComponent(src.id || '')}&title=${encodeURIComponent(t.title || '')}&artist=${encodeURIComponent(t.artist || '')}&format=${selectedFormat}&quality=${selectedQuality}${fresh ? '&fresh=1' : ''}`;
+          const res = await fetch(downloadUrl, { signal: batchAbort.signal });
+          const text = await res.text();
+          let data;
+          try { data = JSON.parse(text); } catch (e) { throw Object.assign(new Error(text || 'server error'), { status: res.status }); }
+          if (!data.success) throw Object.assign(new Error(data.error || 'Failed to download'), { status: res.status });
+          if (data.directory) lastDir = data.directory;
+        };
+        const result = tracks.length ? await window.MurielDownloadBatch.runDownloadBatch(tracks, downloadOne, {
+          concurrency: 2, signal: batchAbort.signal, onProgress: setProgress,
+        }) : { done: [], failed: [], aborted: batchAbort.signal.aborted };
+        for (const f of result.failed) console.error('Download failed:', f.item.title || f.item.url || '', f.error && f.error.message);
+        const done = result.done.length;
+        const failedTracks = result.failed.map((f) => f.item);
         el.btnConfirmDownload.disabled = false;
         if (downloadAbort === batchAbort) downloadAbort = null;
+        if (typeof batch.onDone === 'function') batch.onDone(done + skipped, total);
         // on phones the server answers with the app's internal path (/data/Downloads); name the real folder
         if (isPhoneApp && lastDir) {
           try { lastDir = (await window.electronAPI.getDownloadDir()).dir || lastDir; } catch (e) {}
@@ -15399,9 +16666,20 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (done) showToast(lastDir ? Tm('Stopped. {0} of {1} songs were downloaded to {2}', done, tracks.length, lastDir) : Tm('Stopped. {0} of {1} songs were downloaded', done, tracks.length), 'info');
           return;
         }
+        const summary = [Tf('{0} downloaded', done)];
+        if (skipped) summary.push(Tf('{0} already downloaded', skipped));
+        if (failedTracks.length) summary.push(Tf('{0} failed', failedTracks.length));
+        if (failedTracks.length) {
+          // the dialog stays open with the summary; its button now retries just the failed songs
+          downloadBatch = { ...batch, tracks: failedTracks, retry: true };
+          if (el.downloadPreviewArtist) el.downloadPreviewArtist.textContent = summary.join(' · ');
+          updateDownloadBtnLabel();
+          showToast(Tm('Downloaded {0}/{1} ({2} failed)', done + skipped, total, failedTracks.length), 'error');
+          return;
+        }
         downloadBatch = null;
         if (el.downloadModal) closeModal(el.downloadModal);
-        showToast(failed > 0 ? Tm('Downloaded {0}/{1} ({2} failed)', done, tracks.length, failed) : lastDir ? Tm('Downloaded {0} tracks to {1}', tracks.length, lastDir) : Tm('Downloaded {0} tracks', tracks.length), failed > 0 ? 'error' : 'success');
+        showToast(lastDir ? Tm('Downloaded {0} tracks to {1}', done, lastDir) + (skipped ? ` (${summary.slice(1).join(', ')})` : '') : summary.join(' · '), 'success');
         return;
       }
       if (!trackToDownload) return;
@@ -15608,6 +16886,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (stored) {
         const parsed = JSON.parse(stored);
         analysisCache.set(cleanId, parsed);
+        capMap(analysisCache, 300);
         return parsed;
       }
     } catch (e) {}
@@ -15618,6 +16897,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!trackId || !analysis) return;
     const cleanId = String(trackId).replace(/[^a-zA-Z0-9_-]/g, '_');
     analysisCache.set(cleanId, analysis);
+    capMap(analysisCache, 300);
     try {
       localStorage.setItem(`muriel_audio_analysis_${cleanId}`, JSON.stringify(analysis));
       fetch(`http://127.0.0.1:${state.serverPort}/api/track-analysis`, {
@@ -15707,6 +16987,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const disliked = Lib.feedbackAvoid(getMixFeedback());
     keys.push(...disliked.keys);
     disliked.artists.forEach((a) => { if (!artists.includes(a)) artists.push(a); });
+    // and blocked artists and songs
+    const blocks = getBlocks();
+    blocks.artists.forEach((a) => { if (!artists.includes(a)) artists.push(a); });
+    blocks.songs.forEach((t) => keys.push(getTrackNormalizedKey(t.artist, t.title)));
 
     return {
       keys: Array.from(new Set(keys)),
@@ -15919,6 +17203,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           const result = [c1, c2];
           dominantColorsCache.set(url, result);
+          capMap(dominantColorsCache, 300);
           canvas.width = 0;
           canvas.height = 0;
           img.onload = null;
@@ -16064,7 +17349,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const newTracks = data.tracks.filter(t => {
           const cid = getTrackCanonicalId(t);
           const nkey = getTrackNormalizedKey(t.artist, t.title);
-          return !existingIds.has(cid) && !existingKeys.has(nkey);
+          return !existingIds.has(cid) && !existingKeys.has(nkey) && !isBlocked(t);
         });
         if (newTracks.length > 0) {
           state.queue.push(...newTracks);
@@ -16604,7 +17889,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
       section('Your genres').appendChild(chips);
     }
-    for (const sec of data.sections || []) {
+    // blocked artists and songs stay out of For you; so do the songs you played just now
+    const blockedArtists = getBlocks().artists;
+    const recentKeys = new Set((state.history || []).slice(0, 30).map(t => getTrackNormalizedKey(t.artist, t.title)));
+    for (const raw of data.sections || []) {
+      const sec = raw.type === 'artists'
+        ? { ...raw, items: (raw.items || []).filter(a => a && !Lib.isArtistBlocked(blockedArtists, a.name)) }
+        : { ...raw, tracks: (raw.tracks || []).filter(t => t && !isBlocked(t) && !recentKeys.has(getTrackNormalizedKey(t.artist, t.title))) };
+      if (!(sec.items || sec.tracks || []).length) continue;
       const row = document.createElement('div');
       row.className = 'fy-row';
       if (sec.type === 'artists') {
@@ -16619,7 +17911,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         sec.tracks.forEach((t, i) => {
           const b = document.createElement('button');
           b.className = 'fy-card';
-          b.innerHTML = `<img src="${escapeHtml(listThumb(t.thumbnail) || '')}" alt="" loading="lazy" decoding="async"><span class="fy-title">${escapeHtml(t.title)}</span><span class="fy-artist-name">${escapeHtml(t.artist)}</span>`;
+          b.innerHTML = `<img src="${escapeHtml(listThumb(getTrackThumbUrl(t)) || '')}" data-art="${escapeHtml(JSON.stringify(trackArtCandidates(t)))}" alt="" loading="lazy" decoding="async" onerror="${THUMB_FALLBACK}"><span class="fy-title">${escapeHtml(t.title)}</span><span class="fy-artist-name">${escapeHtml(t.artist)}</span>`;
           b.addEventListener('click', () => playTrack(t, sec.tracks, i));
           row.appendChild(b);
         });
@@ -16641,6 +17933,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const TRENDING_CACHE_KEY = 'muriel_trending_cache';
   const spThumb = (t) => (t && (getTrackThumbUrl(t) || t.thumbnail || t.cover)) || '';
 
+  function spCoverPlaceholder(wrap) {
+    if (wrap.querySelector('.sp-cover-note')) return;
+    wrap.insertAdjacentHTML('beforeend', '<svg class="sp-cover-note" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>');
+  }
+
   function spCard({ cover, gridCovers, title, sub, explicit, round, onClick }) {
     const card = document.createElement('div');
     card.className = 'sp-card';
@@ -16659,8 +17956,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       coverWrap.appendChild(grid);
     } else if (cover) {
       const img = document.createElement('img');
-      img.loading = 'lazy'; img.decoding = 'async'; img.alt = ''; img.src = cover;
+      img.loading = 'lazy'; img.decoding = 'async'; img.alt = '';
+      // a music note instead of the broken-image icon when the cover doesn't load (from Riff 43.2)
+      img.addEventListener('error', () => { img.remove(); spCoverPlaceholder(coverWrap); }, { once: true });
+      img.src = cover;
       coverWrap.appendChild(img);
+    } else if (!round) {
+      spCoverPlaceholder(coverWrap);
     }
     const titleEl = document.createElement('div');
     titleEl.className = 'sp-card-title sp-fade';
@@ -16773,8 +18075,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           });
           const data = await res.json();
           // a mix of a handful of songs is not much of a mix
-          if (data && data.success && Array.isArray(data.tracks) && data.tracks.length >= 8) {
-            mixes.push({ id: plan.id, title: `Daily Mix ${mixes.length + 1}`, artists: plan.artists, tracks: data.tracks });
+          const mixTracks = data && data.success && Array.isArray(data.tracks) ? data.tracks.filter(t => !isBlocked(t)) : [];
+          if (mixTracks.length >= 8) {
+            mixes.push({ id: plan.id, title: `Daily Mix ${mixes.length + 1}`, artists: plan.artists, tracks: mixTracks });
             try { localStorage.setItem(DAILY_MIXES_KEY, JSON.stringify({ day, mixes })); } catch (e) {}
             renderMadeForYou();
           }
@@ -16801,8 +18104,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const cached = readDailyMixes();
     const mixes = cached ? cached.mixes : [];
     if (!cached && !mixesBusy && !mixesTimer) {
-      // not straight away: the home page's own recommendations go first
-      mixesTimer = setTimeout(() => { mixesTimer = 0; generateDailyMixes(false); }, 3000);
+      // not straight away: the home page's own recommendations go first; and not while nobody sees the
+      // window (each mix runs yt-dlp several times, #16): the home page asks again when it's shown
+      mixesTimer = setTimeout(() => { mixesTimer = 0; if (!document.hidden && state.isWindowVisible !== false) generateDailyMixes(false); }, 3000);
     }
     const wave = Array.isArray(myWaveCurrentTracks) ? myWaveCurrentTracks : [];
     if (!wave.length && !mixes.length && !mixesBusy) { sec.hidden = true; return; }
@@ -16994,7 +18298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       grid.innerHTML = `<div class="empty-hint">${escapeHtml(T('No artists yet. Open an artist and tap Follow to see them here.'))}</div>`;
       return;
     }
-    list.forEach((a) => grid.appendChild(followedArtistCard(a)));
+    sortedLibrary('artists', list).forEach((a) => grid.appendChild(followedArtistCard(a)));
     if (state.serverPort) fetchFollowedMeta(list);
   }
   const btnShowArtists = document.getElementById('btn-show-artists');
@@ -17170,7 +18474,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         return false;
       }
 
-      myWaveCurrentTracks = uniqueTracks;
+      // blocked artists and songs never make it into My Wave (the server leaves them out too; this is the safety net)
+      myWaveCurrentTracks = uniqueTracks.filter(t => !isBlocked(t));
+      if (!myWaveCurrentTracks.length) myWaveCurrentTracks = uniqueTracks;
       currentWaveFocusedIndex = 0;
       if (spHomeReady && isSpotifyHome()) renderMadeForYou();
       if (homeMode === 'wave') {
@@ -18043,7 +19349,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const coverImg = document.getElementById('track-art-cover-img');
     const coverPh = document.getElementById('track-art-cover-placeholder');
     const coverStatus = document.getElementById('track-art-cover-status');
-    const activeCover = art.cover || t.thumbnail || '';
+    const activeCover = getTrackThumbUrl(t);
+    if (coverImg) {
+      coverImg.dataset.art = JSON.stringify(trackArtCandidates(t));
+      coverImg.__artTried = null;
+      coverImg.onerror = () => { if (!nextTrackArt(coverImg)) { coverImg.style.display = 'none'; if (coverPh) coverPh.style.display = 'block'; } };
+    }
     if (activeCover) {
       if (coverImg) {
         coverImg.src = activeCover;
@@ -18092,6 +19403,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     trackArtCurrentTrack = track;
     const modal = document.getElementById('track-art-modal');
     if (!modal) return;
+    resetCoverPicker();
     renderTrackArtModal();
     const card = modal.querySelector('.dialog-card') || modal;
     modal.classList.remove('hidden');
@@ -18174,6 +19486,90 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Cover picker (#18): the song's own covers in several sizes, the first YouTube results for artist + title,
+  // and Apple Music (iTunes) album covers through the app's existing album search. Picking one saves it as the
+  // song's custom cover; Reset goes back to the default.
+  const coverPickerGrid = document.getElementById('track-art-picker-grid');
+  const coverPickerStatus = document.getElementById('track-art-picker-status');
+  const btnFindTrackCover = document.getElementById('btn-find-track-cover');
+  let coverPickerRun = 0;
+
+  function resetCoverPicker() {
+    coverPickerRun++;
+    if (coverPickerGrid) { coverPickerGrid.innerHTML = ''; coverPickerGrid.hidden = true; }
+    if (coverPickerStatus) I18N.text(coverPickerStatus, 'Pick one from YouTube and Apple Music');
+    if (btnFindTrackCover) btnFindTrackCover.disabled = false;
+  }
+
+  async function coverCandidatesFor(track) {
+    const out = [];
+    const seen = new Set();
+    const add = (url, source) => {
+      if (!url || typeof url !== 'string' || !/^https?:\/\//.test(url)) return;
+      const key = url.replace(YT_THUMB, 'yt:$1/').replace(/\?.*$/, '');
+      if (seen.has(url) || seen.has(key)) return;
+      seen.add(url); seen.add(key);
+      out.push({ url, source });
+    };
+    // the same frame in smaller sizes isn't a choice
+    const own = trackArtCandidates(track).filter((u) => /^https?:\/\//.test(u) && !u.startsWith('http://127.0.0.1') && !/ytimg\.com\/vi\/[^/]+\/(mq)?default\.jpg/.test(u));
+    const ytId = trackYoutubeId(track);
+    own.forEach((u) => add(u, YT_THUMB.test(u) ? 'YouTube' : T('Current')));
+    if (ytId) ['maxresdefault', 'sddefault'].forEach((s) => add(`https://i.ytimg.com/vi/${ytId}/${s}.jpg`, 'YouTube'));
+    const q = [track.artist, track.title].filter(Boolean).join(' ').trim();
+    if (!q || !state.serverPort) return out;
+    const base = `http://127.0.0.1:${state.serverPort}`;
+    const [yt, albums] = await Promise.all([
+      fetch(`${base}/api/search?q=${encodeURIComponent(q)}&platform=youtube&limit=6`).then((r) => r.json()).catch(() => null),
+      fetch(`${base}/api/albums/search?q=${encodeURIComponent(q)}`).then((r) => r.json()).catch(() => null),
+    ]);
+    ((albums && albums.albums) || []).slice(0, 8).forEach((a) => add(a.cover, a.title ? `Apple Music · ${a.title}` : 'Apple Music'));
+    ((yt && yt.tracks) || []).slice(0, 6).forEach((t) => add(t.thumbnail || (t.id ? `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg` : ''), t.title ? `YouTube · ${t.title}` : 'YouTube'));
+    return out;
+  }
+
+  if (btnFindTrackCover && coverPickerGrid) {
+    btnFindTrackCover.addEventListener('click', async () => {
+      const track = trackArtCurrentTrack;
+      if (!track) return;
+      const run = ++coverPickerRun;
+      btnFindTrackCover.disabled = true;
+      if (coverPickerStatus) I18N.text(coverPickerStatus, 'Looking for covers…');
+      const list = await coverCandidatesFor(track);
+      if (run !== coverPickerRun) return;
+      btnFindTrackCover.disabled = false;
+      const current = getTrackThumbUrl(track);
+      coverPickerGrid.innerHTML = '';
+      list.forEach(({ url, source }) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'track-art-choice' + (url === current ? ' selected' : '');
+        b.title = source;
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        // a size YouTube doesn't have comes back as an error (or a 120px grey frame): leave it out
+        img.onerror = () => b.remove();
+        img.onload = () => { if (img.naturalWidth <= 120 && /ytimg\.com\/vi\/[^/]+\/(maxres|sd)default/.test(url)) b.remove(); };
+        img.src = url;
+        const tag = document.createElement('span');
+        tag.className = 'track-art-choice-src';
+        tag.textContent = source;
+        b.append(img, tag);
+        b.addEventListener('click', () => {
+          setTrackArt(track, { cover: url });
+          onTrackArtUpdated(track);
+          renderTrackArtModal();
+          coverPickerGrid.querySelectorAll('.track-art-choice').forEach((x) => x.classList.toggle('selected', x === b));
+        });
+        coverPickerGrid.appendChild(b);
+      });
+      coverPickerGrid.hidden = !list.length;
+      if (coverPickerStatus) I18N.text(coverPickerStatus, list.length ? 'Tap a cover to use it for this song' : 'No covers found');
+    });
+  }
+
   if (btnChooseTrackBanner) {
     btnChooseTrackBanner.addEventListener('click', async () => {
       if (!trackArtCurrentTrack) return;
@@ -18200,6 +19596,41 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderTrackArtModal();
     });
   }
+
+  // Search results: All / Songs / Artists / Albums (from Riff 43.1). Only shows or hides the sections, so the
+  // choice stays for the next search.
+  (function initSearchFilterChips() {
+    const box = el.searchResultsContainer;
+    const chips = document.getElementById('search-filter-chips');
+    if (!box || !chips) return;
+    chips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.chip-btn[data-filter]');
+      if (!chip) return;
+      box.dataset.filter = chip.dataset.filter;
+      chips.querySelectorAll('.chip-btn').forEach((c) => {
+        const on = c === chip;
+        c.classList.toggle('active', on);
+        c.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    });
+  })();
+
+  // The mouse's back button goes back like the page's own Back button (from Riff 43.1; computers)
+  (function initMouseBack() {
+    if (isPhoneApp) return;
+    const back = (e) => {
+      if (e.button !== 3) return;
+      e.preventDefault();
+      if (e.type !== 'mouseup') return;
+      if (document.querySelector('.modal-backdrop:not(.hidden)')) return;
+      const btn = ['btn-back-artist', 'btn-back-album', 'btn-back-playlists', 'btn-settings-back']
+        .map((id) => document.getElementById(id)).find((b) => b && b.offsetParent !== null && b.closest('.content-view.active'));
+      if (btn) { btn.click(); return; }
+      if (state.previousView && state.previousView !== state.currentView && state.currentView !== 'discover') switchView(state.previousView);
+    };
+    window.addEventListener('mousedown', back, true);
+    window.addEventListener('mouseup', back, true);
+  })();
 
   loadPlugins();
   loadHomePage();
@@ -18566,7 +19997,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderPlaylistDuplicateButton(pl) {
     if (!el.btnDedupePlaylist || !pl) return;
     const duplicates = pl.tracks.length - dedupeTracks(pl.tracks, isSameTrack, getTrackCanonicalId).length;
-    el.btnDedupePlaylist.classList.toggle('hidden', duplicates === 0);
+    // the button stays out of the header; the "..." menu shows it only while there is something to remove
+    el.btnDedupePlaylist.classList.add('hidden');
+    el.btnDedupePlaylist.dataset.duplicates = String(duplicates);
     if (el.btnDedupePlaylistLabel) {
       el.btnDedupePlaylistLabel.textContent = duplicates === 1 ? 'Remove 1 duplicate' : `Remove ${duplicates} duplicates`;
     }
@@ -18847,9 +20280,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const a = el.nativeAudio;
       return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
     };
-    slider.addEventListener('pointerdown', () => { tvkSeekDragging = true; });
+    const startSeekDrag = () => { tvkSeekDragging = true; resetTvIdleTimer(); };
+    const endSeekDrag = () => { tvkSeekDragging = false; resetTvIdleTimer(); };
+    slider.addEventListener('pointerdown', startSeekDrag);
+    slider.addEventListener('touchstart', startSeekDrag, { passive: true });
     slider.addEventListener('input', () => {
       tvkSeekDragging = true;
+      resetTvIdleTimer();
       const t = (Number(slider.value) / 1000) * durNow();
       const curEl = document.getElementById('tvk-time-current');
       if (curEl) curEl.textContent = formatDuration(t);
@@ -18862,8 +20299,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateMediaPositionState();
       }
       tvkSeekDragging = false;
+      resetTvIdleTimer();
     });
-    slider.addEventListener('pointerup', () => { setTimeout(() => { tvkSeekDragging = false; }, 0); });
+    slider.addEventListener('pointerup', () => { setTimeout(endSeekDrag, 0); });
+    slider.addEventListener('pointercancel', () => { setTimeout(endSeekDrag, 0); });
+    slider.addEventListener('touchend', () => { setTimeout(endSeekDrag, 0); }, { passive: true });
+    slider.addEventListener('touchcancel', () => { setTimeout(endSeekDrag, 0); }, { passive: true });
     // the slider must not start a lyrics drag or hide the controls
     slider.addEventListener('mousemove', (e) => e.stopPropagation());
   })();
@@ -19099,6 +20540,139 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   })();
 
+  // ---- song radio (#28): a mix of songs like one song, or a few picked together; the queue grows as it plays ----
+  // Settings > Tracks > Song radio shows or hides its buttons (on unless turned off).
+  const songRadio = { current: null, nextId: 1 };
+  function songRadioEnabled() {
+    try { return localStorage.getItem('muriel_song_radio') !== '0'; } catch (e) { return true; }
+  }
+  function radioSeedOf(t) {
+    return { id: t.id || '', title: t.title || '', artist: t.artist || '', platform: t.platform || 'youtube' };
+  }
+  function radioTrackKey(t) {
+    return `${Lib.nameKey(t && t.artist)}::${Lib.nameKey(t && t.title)}`;
+  }
+  // the radio is on while its songs are still in the queue (playing something else from a list replaces the queue)
+  function activeSongRadio() {
+    const r = songRadio.current;
+    return r && state.queue.some((t) => t && t._radio === r.id) ? r : null;
+  }
+  async function fetchSongRadio(r, limit) {
+    const blocks = getBlocks();
+    const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/radio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        seeds: r.seeds.map(radioSeedOf),
+        limit,
+        exclude: { ids: [...r.ids], keys: [...r.keys] },
+        blocks: { artists: blocks.artists, songs: blocks.songs },
+      }),
+    });
+    const data = await res.json();
+    const tracks = data && data.success && Array.isArray(data.tracks) ? data.tracks : [];
+    // the server already leaves these out; this keeps a repeat out even if it found one under another id
+    const fresh = tracks.filter((t) => t && t.title && !r.ids.has(String(t.id || '')) && !r.keys.has(radioTrackKey(t)) && !isBlocked(t));
+    fresh.forEach((t) => { if (t.id) r.ids.add(String(t.id)); r.keys.add(radioTrackKey(t)); t._radio = r.id; });
+    return fresh;
+  }
+  async function startSongRadio(seeds) {
+    const list = (seeds || []).filter((t) => t && t.title).slice(0, 5);
+    if (!list.length) return;
+    const r = {
+      id: songRadio.nextId++,
+      seeds: list,
+      label: list.length === 1 ? Tm('Radio · {0}', list[0].title) : Tm('Radio · {0} and {1} more', list[0].title, list.length - 1),
+      ids: new Set(), keys: new Set(), loading: true, exhausted: false,
+    };
+    list.forEach((t) => { if (t.id) r.ids.add(String(t.id)); r.keys.add(radioTrackKey(t)); });
+    songRadio.current = r;
+    showToast(list.length === 1 ? Tm('Starting radio from "{0}"…', list[0].title) : Tm('Starting radio from {0} songs…', list.length), 'info');
+    let tracks = [];
+    try { tracks = await fetchSongRadio(r, 25); } catch (e) { console.warn('[radio]', e && e.message); }
+    r.loading = false;
+    if (songRadio.current !== r) return; // another radio was started meanwhile
+    if (!tracks.length) {
+      songRadio.current = null;
+      showToast(navigator.onLine === false ? Tm('Radio needs the internet') : Tm('Couldn\'t find songs for a radio. Try another song'), 'error');
+      return;
+    }
+    state.myWaveActive = false;
+    if (list.length === 1) {
+      // the song it was started from first; the same track when it is the one playing, so it doesn't restart
+      const seed = state.currentTrack && isSameTrack(state.currentTrack, list[0]) ? state.currentTrack : list[0];
+      seed._radio = r.id;
+      if (seed === state.currentTrack) {
+        state.queue = [seed, ...tracks];
+        state.queueIndex = 0;
+        state.queueHistory = [0];
+        shuffleBag.next = []; shuffleBag.queue = state.queue;
+        updateQueueBadge();
+      } else {
+        playTrack(seed, [seed, ...tracks], 0);
+      }
+    } else {
+      playTrack(tracks[0], tracks, 0);
+    }
+    renderSongRadioLabel();
+  }
+  async function extendSongRadio() {
+    const r = activeSongRadio();
+    if (!r || r.loading || r.exhausted) return;
+    if (state.queueIndex < state.queue.length - 5) return;
+    r.loading = true;
+    let more = [];
+    try { more = await fetchSongRadio(r, 20); } catch (e) {}
+    r.loading = false;
+    if (activeSongRadio() !== r) return;
+    if (!more.length) { r.exhausted = true; return; }
+    state.queue.push(...more);
+    updateQueueBadge();
+  }
+  // "Radio · <song>" above the queue while a radio plays
+  function renderSongRadioLabel() {
+    const list = el.queueTracksList;
+    if (!list || !list.parentNode) return;
+    let label = document.getElementById('queue-radio-label');
+    const r = activeSongRadio();
+    if (!r) { if (label) label.hidden = true; return; }
+    if (!label) {
+      label = document.createElement('div');
+      label.id = 'queue-radio-label';
+      label.className = 'queue-radio-label';
+      label.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg><span class="queue-radio-text"></span>';
+      list.parentNode.insertBefore(label, list);
+    }
+    label.hidden = false;
+    I18N.text(label.querySelector('.queue-radio-text'), r.label);
+  }
+  window.addEventListener('muriel:queue', () => {
+    renderSongRadioLabel();
+    if (activeSongRadio()) extendSongRadio();
+  });
+  (function setupSongRadio() {
+    const toggle = document.getElementById('toggle-song-radio');
+    const apply = () => {
+      const on = songRadioEnabled();
+      document.body.classList.toggle('no-song-radio', !on);
+      if (toggle) toggle.classList.toggle('active', on);
+    };
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        try { localStorage.setItem('muriel_song_radio', songRadioEnabled() ? '0' : '1'); } catch (e) {}
+        apply();
+      });
+    }
+    apply();
+    const btn = document.getElementById('btn-playbar-radio');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (!state.currentTrack) { showToast(Tm('No track currently playing'), 'info'); return; }
+        startSongRadio([state.currentTrack]);
+      });
+    }
+  })();
+
   // ---- share the playing song: a one-song Muriel link, the same kind playlists use ----
   (function setupPlaybarShare() {
     const btn = document.getElementById('btn-playbar-share');
@@ -19206,6 +20780,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (e) {}
       state.isPlaying = false;
       document.body.classList.remove('is-playing');
+      if (retryFresh(token, state.currentTrack)) return;
       updatePlayPauseButton(false, false);
       if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
       if (!skipUnplayable(token, state.currentTrack)) showToast('This song took too long to load. Try again or skip.', 'error');
@@ -19325,6 +20900,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       a.dispatchEvent(new Event('ended'));
       return true;
     }
+    if (crossfadeTriggered) crossfadeFadeInPending = true;
     state._isNaturalEnding = true;
     try { playNext(); } finally { state._isNaturalEnding = false; }
     return true;
@@ -19541,6 +21117,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     next: () => playNext(),
     prev: () => playPrev(),
     seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
+    // iOS reports its own volume changes (hardware buttons) and the first value on launch; neither may be
+    // written back to the system, and the launch value must not undo the in-app mute.
+    setVolume: (value, opts) => applyVolumeValue(value, { silent: true, keepMute: !!(opts && opts.keepMute) }),
     toggleShuffle: () => { if (el.btnShuffle) el.btnShuffle.click(); return state.isShuffle; },
     toggleRepeat: () => { if (el.btnRepeat) el.btnRepeat.click(); return state.repeatMode; },
     isFavorite: (t) => state.favorites.some((f) => isSameSong(f, t)),

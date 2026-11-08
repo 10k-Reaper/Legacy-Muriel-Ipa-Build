@@ -206,6 +206,15 @@
         </div>
 
         <div class="rail-drawer-section" id="drawer-section-playlists">
+          <div class="playlists-sort-row"><select class="pill-select" id="playlists-sort" title="Sort playlists" aria-label="Sort playlists" hidden><option value="custom">Custom order</option><option value="name-asc">Name (A-Z)</option><option value="name-desc">Name (Z-A)</option><option value="size-desc">Most songs</option></select>
+          <div class="m3-dropdown sort-dropdown" id="playlists-sort-dropdown">
+            <button class="m3-dropdown-trigger" id="playlists-sort-trigger" type="button" title="Sort playlists" aria-label="Sort playlists" aria-haspopup="listbox">
+              <svg class="sort-dropdown-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="10" y1="18" x2="14" y2="18"></line></svg>
+              <span id="playlists-sort-label">Custom order</span>
+              <svg class="m3-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="m3-dropdown-menu" id="playlists-sort-menu" role="listbox"></div>
+          </div></div>
           <div class="playlists-list" id="playlists-list"></div>
         </div>
       </div>
@@ -288,7 +297,13 @@
           <div id="section-for-you"></div>
         </div>
 
-        <div class="search-results-container hidden" id="search-results-container">
+        <div class="search-results-container hidden" id="search-results-container" data-filter="all">
+          <div class="search-filter-chips" id="search-filter-chips" role="tablist">
+            <button type="button" class="chip-btn active" data-filter="all" role="tab" aria-selected="true">All</button>
+            <button type="button" class="chip-btn" data-filter="songs" role="tab" aria-selected="false">Songs</button>
+            <button type="button" class="chip-btn" data-filter="artists" role="tab" aria-selected="false">Artists</button>
+            <button type="button" class="chip-btn" data-filter="albums" role="tab" aria-selected="false">Albums</button>
+          </div>
           <div id="search-artist-card-container"></div>
           <div id="search-albums-container"></div>
           <div class="tracks-list" id="search-tracks-list"></div>
@@ -296,18 +311,11 @@
       </section>
 
       <section class="content-view" id="view-favorites">
-        <div class="view-header">
-          <div>
-            <h2>Favorites</h2>
-            <span class="view-subtitle" id="favorites-subtitle" data-i18n>0 tracks saved</span>
+        <div class="fav-toolbar" id="favorites-toolbar">
+          <div class="view-search-box" id="favorites-search-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
+            <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
           </div>
-          <button class="btn-outline-pill" id="btn-select-favorites" title="Select tracks" aria-label="Select tracks">
-            <span>Select</span>
-          </button>
-          <button class="btn-outline-pill" id="btn-download-favorites" title="Download all favorites" aria-label="Download all favorites">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-            <span>Download all</span>
-          </button>
           <select class="pill-select" id="favorites-sort" title="Sort favorites" aria-label="Sort favorites" hidden>
             <option value="manual">Manual order</option>
             <option value="added-desc">Date added (newest)</option>
@@ -326,10 +334,20 @@
             </button>
             <div class="m3-dropdown-menu" id="favorites-sort-menu" role="listbox"></div>
           </div>
-        </div>
-        <div class="view-search-box" id="favorites-search-box">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
-          <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
+          <button class="btn-icon-pill" id="btn-favorites-more" title="More options" aria-label="More options" aria-haspopup="menu">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle></svg>
+          </button>
+          <button class="hidden" id="btn-select-favorites" title="Select tracks" aria-label="Select tracks">
+            <span>Select</span>
+          </button>
+          <button class="hidden" id="btn-download-favorites" title="Download all favorites" aria-label="Download all favorites">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span>Download all</span>
+          </button>
+          <div class="hidden">
+            <h2>Favorites</h2>
+            <span class="view-subtitle" id="favorites-subtitle" data-i18n>0 tracks saved</span>
+          </div>
         </div>
         <div class="tracks-list" id="favorites-tracks-list">
           <div class="empty-hint">No favorite tracks yet. Click the heart icon on any song to save it.</div>
@@ -342,6 +360,15 @@
             <h2>Albums</h2>
             <span class="view-subtitle" id="albums-subtitle">0 albums saved</span>
           </div>
+          <select class="pill-select" id="albums-sort" title="Sort albums" aria-label="Sort albums" hidden><option value="custom">Recently saved</option><option value="title-asc">Title (A-Z)</option><option value="artist-asc">Artist (A-Z)</option><option value="year-desc">Year (newest)</option></select>
+          <div class="m3-dropdown sort-dropdown" id="albums-sort-dropdown">
+            <button class="m3-dropdown-trigger" id="albums-sort-trigger" type="button" title="Sort albums" aria-label="Sort albums" aria-haspopup="listbox">
+              <svg class="sort-dropdown-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="10" y1="18" x2="14" y2="18"></line></svg>
+              <span id="albums-sort-label">Recently saved</span>
+              <svg class="m3-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="m3-dropdown-menu" id="albums-sort-menu" role="listbox"></div>
+          </div>
         </div>
         <div class="saved-albums-grid" id="saved-albums-grid"></div>
       </section>
@@ -351,6 +378,15 @@
           <div>
             <h2>Artists</h2>
             <span class="view-subtitle" id="artists-subtitle">0 artists followed</span>
+          </div>
+          <select class="pill-select" id="artists-sort" title="Sort artists" aria-label="Sort artists" hidden><option value="custom">Recently followed</option><option value="name-asc">Name (A-Z)</option><option value="plays-desc">Most played</option></select>
+          <div class="m3-dropdown sort-dropdown" id="artists-sort-dropdown">
+            <button class="m3-dropdown-trigger" id="artists-sort-trigger" type="button" title="Sort artists" aria-label="Sort artists" aria-haspopup="listbox">
+              <svg class="sort-dropdown-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="10" y1="18" x2="14" y2="18"></line></svg>
+              <span id="artists-sort-label">Recently followed</span>
+              <svg class="m3-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="m3-dropdown-menu" id="artists-sort-menu" role="listbox"></div>
           </div>
         </div>
         <div class="followed-artists-grid" id="followed-artists-grid"></div>
@@ -362,10 +398,16 @@
             <h2>My files</h2>
             <span class="view-subtitle" id="local-subtitle">0 tracks in library</span>
           </div>
-          <button class="btn-pill-primary" id="btn-add-local-files">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-            Add files
-          </button>
+          <div class="local-add-actions">
+            <button class="btn-outline-pill" id="btn-add-local-folder" hidden>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+              Add folder
+            </button>
+            <button class="btn-pill-primary" id="btn-add-local-files">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              Add files
+            </button>
+          </div>
         </div>
         <div class="view-search-box" id="local-search-box">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
@@ -414,10 +456,23 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
                 <span>Shuffle</span>
               </button>
-              <button class="btn-icon-pill" id="btn-share-playlist" title="Share playlist" aria-label="Share playlist">
+              <button class="btn-icon-pill" id="btn-share-playlist" title="Share or export" aria-label="Share or export" aria-haspopup="menu">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>
               </button>
-              <button class="btn-outline-pill hidden" id="btn-dedupe-playlist" title="Remove duplicate tracks">
+              <button class="btn-icon-pill" id="btn-download-playlist" title="Download all songs" aria-label="Download all songs">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              </button>
+              <button class="btn-icon-pill" id="btn-fav-all-playlist" title="Add all to favorites" aria-label="Add all to favorites">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+              </button>
+              <button class="btn-icon-pill" id="btn-playlist-more" title="More options" aria-label="More options" aria-haspopup="menu">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle></svg>
+              </button>
+              <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              </button>
+              <!-- kept in the DOM for their handlers, but now reached from the "..." and Share menus -->
+              <button class="hidden" id="btn-dedupe-playlist" title="Remove duplicate tracks">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 <span id="btn-dedupe-playlist-label" data-i18n>Remove duplicates</span>
               </button>
@@ -431,7 +486,7 @@
                 <option value="album-asc">Album</option>
                 <option value="duration-asc">Duration (shortest)</option>
               </select>
-              <div class="m3-dropdown sort-dropdown" id="playlist-sort-dropdown">
+              <div class="m3-dropdown sort-dropdown hidden" id="playlist-sort-dropdown">
                 <button class="m3-dropdown-trigger" id="playlist-sort-trigger" type="button" title="Sort playlist" aria-label="Sort playlist" aria-haspopup="listbox">
                   <svg class="sort-dropdown-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="10" y1="18" x2="14" y2="18"></line></svg>
                   <span id="playlist-sort-label">Manual order</span>
@@ -439,24 +494,14 @@
                 </button>
                 <div class="m3-dropdown-menu" id="playlist-sort-menu" role="listbox"></div>
               </div>
-              <button class="btn-outline-pill" id="btn-select-playlist" title="Select tracks" aria-label="Select tracks">
+              <button class="hidden" id="btn-select-playlist" title="Select tracks" aria-label="Select tracks">
                 <span>Select</span>
               </button>
-              <button class="btn-outline-pill" id="btn-download-playlist" title="Download all songs" aria-label="Download all songs">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                <span id="btn-download-playlist-label">Download all</span>
-              </button>
-              <button class="btn-icon-pill" id="btn-fav-all-playlist" title="Add all to favorites" aria-label="Add all to favorites">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
-              </button>
-              <button class="btn-icon-pill" id="btn-rename-playlist" title="Rename playlist" aria-label="Rename playlist">
+              <button class="hidden" id="btn-rename-playlist" title="Rename playlist" aria-label="Rename playlist">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
               </button>
-              <button class="btn-icon-pill" id="btn-export-playlist" title="Export as JSON file" aria-label="Export as JSON file">
+              <button class="hidden" id="btn-export-playlist" title="Export as JSON file" aria-label="Export as JSON file">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="12" x2="12" y2="18"></line><polyline points="9 15 12 18 15 15"></polyline></svg>
-              </button>
-              <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               </button>
             </div>
           </div>
@@ -484,6 +529,7 @@
                 <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" style="margin-left:3px;"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>
               </button>
               <button type="button" class="btn-icon-pill" id="btn-save-album" title="Save album" aria-label="Save album" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></button>
+              <button type="button" class="btn-icon-pill" id="btn-download-album" title="Download album" aria-label="Download album" disabled><svg class="dl-album-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg><svg class="dl-album-done" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span class="dl-album-progress"></span></button>
             </div>
             <div class="daily-mix-feedback hidden" id="daily-mix-feedback"><span class="daily-mix-feedback-label">Do you like these songs?</span><div class="daily-mix-feedback-actions"><button type="button" class="btn-icon-pill daily-mix-rate-btn" id="btn-dm-like" title="I like this mix" aria-label="I like this mix"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></button><button type="button" class="btn-icon-pill daily-mix-rate-btn" id="btn-dm-dislike" title="Not my taste" aria-label="Not my taste"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg></button></div></div>
           </aside>
@@ -511,6 +557,7 @@
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"></polygon></svg>
                 </button>
                 <button type="button" class="btn-outline-pill artist-follow-btn" id="btn-artist-follow" aria-pressed="false">Follow</button>
+                <button type="button" class="btn-outline-pill artist-block-btn" id="btn-artist-block" aria-pressed="false" title="Skip this artist's songs and keep them out of My Wave and the mixes">Block</button>
               </div>
             </div>
           </div>
@@ -1317,6 +1364,21 @@
               <input type="range" class="pill-range" id="slider-crossfade" min="0" max="12" step="1" value="0">
               <div class="setting-hints"><span>Off</span><span>6s</span><span>12s</span></div>
             </div>
+            <div class="setting-item" id="setting-audio-output-row" hidden>
+              <div class="setting-item-top" style="align-items: center;">
+                <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+                  <span class="setting-name">Output device</span>
+                  <span class="setting-hint">Play on a speaker or headset of your choice instead of the system's</span>
+                </div>
+                <div class="m3-dropdown" id="audio-output-dropdown" style="width: 236px; flex-shrink: 1; min-width: 0;">
+                  <button class="m3-dropdown-trigger" id="audio-output-trigger" type="button">
+                    <span class="m3-dropdown-label" id="audio-output-label">System default</span>
+                    <svg class="m3-dropdown-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                  <div class="m3-dropdown-menu" id="audio-output-menu" data-no-i18n></div>
+                </div>
+              </div>
+            </div>
             <div class="setting-item">
               <div class="setting-item-top" style="align-items: center;">
                 <span class="setting-name">Smooth preset transitions</span>
@@ -1340,6 +1402,24 @@
                 </div>
                 <button type="button" class="effect-switch-btn active" id="toggle-explicit-tag"><span class="thumb"></span></button>
               </div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-item-top" style="align-items: center;">
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span class="setting-name">Song radio</span>
+                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">"Start radio" in a song's menu and the player bar: a mix of songs like it that keeps going</span>
+                </div>
+                <button type="button" class="effect-switch-btn active" id="toggle-song-radio"><span class="thumb"></span></button>
+              </div>
+            </div>
+            <div class="setting-item" id="setting-blocked-items">
+              <div class="setting-item-top" style="align-items: center;">
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span class="setting-name">Blocked artists and songs</span>
+                  <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Skipped when the queue moves on and kept out of My Wave and the mixes. Tap one to unblock it</span>
+                </div>
+              </div>
+              <div class="blocked-items-list" id="blocked-items-list"></div>
             </div>
                 </div>
                 <div class="settings-group-title" data-i18n>Lyrics</div>
@@ -1826,10 +1906,10 @@
             <div class="setting-item" id="setting-win-media-keys" style="display: none;">
                     <div class="setting-item-top" style="align-items: center;">
                       <div style="display: flex; flex-direction: column; gap: 2px;">
-                        <span class="setting-name">Capture media keys (Windows)</span>
-                        <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Turn off if another app should receive your media keys</span>
+                        <span class="setting-name">Legacy media key capture (Windows)</span>
+                        <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Leave off to use the Windows media overlay and lock screen controls. Turning this on takes media keys away from the overlay</span>
                       </div>
-                      <button class="effect-switch-btn active" id="btn-win-media-keys"><span class="thumb"></span></button>
+                      <button class="effect-switch-btn" id="btn-win-media-keys"><span class="thumb"></span></button>
                     </div>
                   </div>
             <div class="setting-item" id="tools-row">
@@ -2077,6 +2157,9 @@
     </div>
 
     <div class="playbar-right">
+      <button class="btn-icon-pill" id="btn-playbar-radio" title="Start radio" aria-label="Start radio">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+      </button>
       <div class="visualizer-container" id="visualizer-container" title="Visualizer">
         <canvas id="visualizer-canvas" width="60" height="24"></canvas>
       </div>
@@ -2498,6 +2581,17 @@
   </div>
 
 
+  <div class="modal-backdrop hidden" id="favorites-all-modal">
+    <div class="dialog-card">
+      <h3 id="favorites-all-title">Add all to favorites</h3>
+      <p id="favorites-all-msg" style="margin: 0 0 16px; color: var(--md-sys-color-on-surface-variant); font-size: calc(14px * var(--font-scale, 1));"></p>
+      <div class="dialog-actions">
+        <button class="btn-outline-pill" id="btn-cancel-favorites-all">Cancel</button>
+        <button class="btn-pill-primary" id="btn-confirm-favorites-all">Add</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop hidden" id="tools-install-modal">
     <div class="dialog-card tools-install-card" style="width: 420px;">
       <div class="dialog-header">
@@ -2907,6 +3001,17 @@
             <button class="btn-pill-primary" id="btn-choose-track-cover">Choose file</button>
             <button class="btn-outline-pill" id="btn-reset-track-cover">Reset</button>
           </div>
+        </div>
+
+        <div class="setting-item track-art-picker" style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+            <div style="display: flex; flex-direction: column; min-width: 0;">
+              <span class="setting-name" style="font-weight: 500;">Wrong or missing cover?</span>
+              <span class="setting-hint" id="track-art-picker-status" style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant);">Pick one from YouTube and Apple Music</span>
+            </div>
+            <button class="btn-outline-pill" id="btn-find-track-cover" style="flex-shrink: 0;">Find covers</button>
+          </div>
+          <div id="track-art-picker-grid" class="track-art-picker-grid" hidden></div>
         </div>
 
         <div class="setting-item" style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
@@ -3349,6 +3454,21 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2.5"></line></svg>
           </button>
         </div>
+        <div class="tvk-secondary-controls" aria-label="Playback options">
+          <button class="control-btn" id="btn-tvk-fav" type="button" title="Favorite" aria-label="Favorite" aria-pressed="false" disabled>
+            <svg id="tvk-fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>
+          </button>
+          <button class="control-btn" id="btn-tvk-shuffle" type="button" title="Shuffle" aria-label="Shuffle" aria-pressed="false">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+          </button>
+          <button class="control-btn" id="btn-tvk-repeat" type="button" title="Repeat" aria-label="Repeat" aria-pressed="false">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path><polyline class="repeat-one-mark" points="10.5 10.5 12.5 9 12.5 15" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+          </button>
+          <div class="tvk-volume-control" title="Volume">
+            <svg class="tvk-volume-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+            <input type="range" class="volume-range tvk-volume-range" id="tvk-volume-slider" min="0" max="1" step="0.01" value="0.85" aria-label="Volume">
+          </div>
+        </div>
         <div class="tvk-progress-row" id="tvk-progress-row">
           <span class="time-label" id="tvk-time-current">0:00</span>
           <input type="range" class="pill-range" id="tvk-seek-slider" min="0" max="1000" step="1" value="0" aria-label="Seek">
@@ -3421,6 +3541,7 @@
     <button type="button" class="btn-outline-pill" id="multi-select-all">Select all</button>
     <button type="button" class="btn-outline-pill" id="multi-select-fav">Favorite</button>
     <button type="button" class="btn-outline-pill" id="multi-select-add">Add to playlist</button>
+    <button type="button" class="btn-outline-pill" id="multi-select-radio" title="Radio from selected songs">Start radio</button>
     <button type="button" class="btn-outline-pill" id="multi-select-download">Download</button>
     <button type="button" class="btn-outline-pill" id="multi-select-remove">Remove</button>
     <button type="button" class="btn-pill-primary" id="multi-select-done">Done</button>
@@ -3435,9 +3556,12 @@
   <script src="lyrics-rtl.js"></script>
   <script src="lyrics-sources.js"></script>
   <script src="track-trim.js"></script>
+  <script src="download-batch.js"></script>
+  <script src="now-playing.js"></script>
   <script src="track-audio.js"></script>
   <script src="track-sort.js"></script>
   <script src="search-text.js"></script>
+  <script src="track-match.js"></script>
   <script src="library-tools.js"></script>
   <script src="library-pages.js"></script>
   <script src="build-info.js"></script>

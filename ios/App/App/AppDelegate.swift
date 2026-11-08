@@ -1,5 +1,6 @@
 import UIKit
 import AVFoundation
+import MediaPlayer
 import WebKit
 import Capacitor
 
@@ -69,5 +70,136 @@ class MurielBridgeViewController: CAPBridgeViewController {
     // plugins that live in the app itself (not in an npm package) are registered by hand
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(MurielLiveActivityPlugin())
+        bridge?.registerPluginInstance(MurielAudioSessionPlugin())
+        bridge?.registerPluginInstance(MurielVolumePlugin())
+    }
+}
+
+// Another app's sound (a call, Siri, a video) interrupting Muriel: the page (mobile/audio-interruption.js) is
+// told when it starts and when it ends, and whether iOS says to play again, so a song that was playing starts
+// again like it does in Spotify (#26). Paused in the background the app is suspended soon after; iOS wakes it
+// for the end of the interruption, and a short background task keeps it awake until the page has asked the
+// song to play again (or a lock screen play has arrived).
+@objc(MurielAudioSessionPlugin)
+public class MurielAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "MurielAudioSessionPlugin"
+    public let jsName = "MurielAudioSession"
+    public let pluginMethods: [CAPPluginMethod] = []
+    private var awake: UIBackgroundTaskIdentifier = .invalid
+    private var awakeEnd: DispatchWorkItem?
+
+    override public func load() {
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self = self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            switch type {
+            case .began:
+                self.notifyListeners("interruption", data: ["type": "began"])
+            case .ended:
+                let opts = AVAudioSession.InterruptionOptions(rawValue: note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+                self.stayAwake(seconds: 20)
+                self.notifyListeners("interruption", data: ["type": "ended", "shouldResume": opts.contains(.shouldResume)])
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    // once the song plays again iOS keeps the app running by itself; this only bridges the moment until then
+    private func stayAwake(seconds: Double) {
+        if awake == .invalid {
+            awake = UIApplication.shared.beginBackgroundTask(withName: "MurielInterruptionEnd") { [weak self] in self?.endAwake() }
+        }
+        awakeEnd?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.endAwake() }
+        awakeEnd = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func endAwake() {
+        awakeEnd?.cancel()
+        awakeEnd = nil
+        guard awake != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(awake)
+        awake = .invalid
+    }
+}
+
+// The volume bars on a phone (mobile/mobile-ui.js): iOS ignores an <audio> element's volume, so a bar moves
+// the system volume with an off-screen MPVolumeView. Changes made with the hardware buttons (or Control
+// Center) are observed on the audio session and sent back, keeping the page's bars in step.
+@objc(MurielVolumePlugin)
+public class MurielVolumePlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "MurielVolumePlugin"
+    public let jsName = "MurielVolume"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "getVolume", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
+    ]
+
+    private let volumeView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 10, height: 10))
+    private var volumeObservation: NSKeyValueObservation?
+
+    override public func load() {
+        DispatchQueue.main.async { [weak self] in self?.installVolumeView() }
+        // KVO on outputVolume is public API (the AVSystemController notification is not) and works on iOS 15
+        volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
+            guard let self = self, let volume = change.newValue else { return }
+            DispatchQueue.main.async {
+                self.notifyListeners("volumeChange", data: ["volume": Double(volume)])
+            }
+        }
+    }
+
+    @objc func getVolume(_ call: CAPPluginCall) {
+        call.resolve(["volume": Double(AVAudioSession.sharedInstance().outputVolume)])
+    }
+
+    @objc func setVolume(_ call: CAPPluginCall) {
+        guard let raw = call.getDouble("volume") else {
+            call.reject("volume is required")
+            return
+        }
+        let volume = Float(max(0, min(1, raw)))
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else {
+                call.reject("system volume control unavailable")
+                return
+            }
+            if self.apply(volume) {
+                call.resolve(["volume": Double(volume)])
+                return
+            }
+            // the MPVolumeView's slider appears a moment after the view is added to a window
+            self.installVolumeView()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                if self.apply(volume) {
+                    call.resolve(["volume": Double(volume)])
+                } else {
+                    call.reject("system volume control unavailable")
+                }
+            }
+        }
+    }
+
+    private func installVolumeView() {
+        guard volumeView.superview == nil else { return }
+        volumeView.showsRouteButton = false
+        // not hidden: a hidden MPVolumeView may not install its slider, and 0.01 is invisible anyway
+        volumeView.alpha = 0.01
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let windows = scenes.flatMap { $0.windows }
+        let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first
+        window?.addSubview(volumeView)
+    }
+
+    @discardableResult
+    private func apply(_ volume: Float) -> Bool {
+        installVolumeView()
+        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return false }
+        slider.value = volume
+        slider.sendActions(for: .valueChanged)
+        return true
     }
 }

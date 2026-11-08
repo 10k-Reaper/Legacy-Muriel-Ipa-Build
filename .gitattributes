@@ -1,0 +1,2 @@
+# Keep the reusable patch series LF-only so `git apply` works on Windows too.
+patches/ios15/*.patch text eol=lf

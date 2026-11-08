@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getServerPort: () => ipcRenderer.invoke('get-server-port'),
   getGpuCompositing: () => ipcRenderer.invoke('get-gpu-compositing'),
   pickMedia: () => ipcRenderer.invoke('pick-media'),
-  importAudioFiles: () => ipcRenderer.invoke('import-audio-files'),
+  importAudioFiles: (opts) => ipcRenderer.invoke('import-audio-files', opts && opts.folder ? { folder: true } : undefined),
   onWindowVisibility: (callback) => {
     ipcRenderer.on('window-visibility', (event, visible) => callback(visible));
   },
@@ -76,3 +76,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   googleImportLibrary: (opts) => ipcRenderer.invoke('google-import-library', opts),
   saveTextFile: (payload) => ipcRenderer.invoke('save-text-file', payload),
 });
+
+// macOS uses the native traffic lights instead of the drawn window buttons: tag the page so CSS hides the drawn
+// minimize/maximize/close, and hide the traffic lights whenever the titlebar itself is hidden
+if (process.platform === 'darwin') {
+  window.addEventListener('DOMContentLoaded', () => {
+    document.documentElement.classList.add('platform-darwin');
+    const body = document.body;
+    if (!body) return;
+    let last = null;
+    const sync = () => {
+      const c = body.classList;
+      const visible = !c.contains('mini') && (!c.contains('hide-titlebar') || c.contains('titlebar-peek'));
+      if (visible === last) return;
+      last = visible;
+      ipcRenderer.send('set-window-buttons-visible', visible);
+    };
+    new MutationObserver(sync).observe(body, { attributes: true, attributeFilter: ['class'] });
+    sync();
+  });
+}

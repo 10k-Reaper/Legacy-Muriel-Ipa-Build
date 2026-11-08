@@ -1,0 +1,13 @@
+diff --git a/mobile/build.mjs b/mobile/build.mjs
+index 996f2cd..76dbd77 100644
+--- a/mobile/build.mjs
++++ b/mobile/build.mjs
+@@ -26,7 +26,7 @@ await build({
+   bundle: true,
+   format: 'iife',
+   platform: 'browser',
+-  target: ['safari16'],
++  target: ['safari15'],
+   minify: true,
+   sourcemap: 'linked',
+   legalComments: 'none',

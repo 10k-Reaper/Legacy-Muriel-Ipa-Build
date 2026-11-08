@@ -1,31 +1,105 @@
 # iOS 15 compatibility port
 
-This working copy combines the supplied newer Muriel source with the iOS 15 app minimum used by the supplied 1.2.44 IPA. The original IPA and both source archive extractions remain untouched.
+This repository keeps Muriel playable on **iOS 15.0+** while tracking the upstream
+[`cloverscripts/riff-muriel`](https://github.com/cloverscripts/riff-muriel) source.
 
-## Verified upstream points
+## Upstream lineage
 
-- The `v1.2.0` release and iOS workflow run `40186058608` both point to `14d04ff9bf41d8d1f02f7e9a897ccb49da576601`.
-- The baseline IPA identifies itself as app version `1.2.44`, build `44`, with app minimum iOS `15.0`. Its embedded lyrics widget has minimum iOS `16.2`.
-- The supplied newer source is package version `1.3.5`; its matching IPA is version `1.3.73`, build `73`. The newer app and widget both declare iOS `16.2`.
-- The supplied newer source points to upstream commit `00e221d28d20e49123fd5067b5ed8efed9ff91cc`. Commit `59088e78f5c6c39edaa64c5ac55d446ef9056b17` raised the app minimum for newer Live Activity player controls. Activity handling in the app is already guarded at runtime, and the widget can remain an iOS 16.2-only extension while the host app supports iOS 15.
+- The original working copy was based on upstream commit `00e221d` (package `1.3.5`).
+- The current sync branch tracks upstream `main` at `2df82f5` (package `1.3.10`, 2026-11-01).
+- The native iOS delta between those two upstream commits is small: `AppDelegate.swift`
+  gained the audio-interruption plugin, and the app/widget deployment targets were raised
+  to iOS 16.2. Everything else in the delta is shared web/desktop code.
 
-## Compatibility changes in this copy
+## Compatibility policy
 
-- The app target and project defaults use iOS `15.0`.
-- The `MurielWidgets` extension remains at iOS `16.2`; iOS 15 users keep the music app and its existing lock-screen media controls, while the newer Live Activity remains unavailable there.
-- The mobile bridge is built for Safari `15`.
-- The Google library fetch uses a timeout signal only when WebKit provides `AbortSignal.timeout`.
+- The **app target and project defaults stay at iOS 15.0**.
+- The **`MurielWidgets` Live Activity extension stays at iOS 16.2**. iOS 15 users keep
+  normal lock-screen media controls; the Dynamic Island / Live Activity is unavailable.
+- The mobile bundle is built for **Safari 15**, not Safari 16.
+- Web APIs newer than iOS 15.0 are feature-checked or replaced with fallbacks. iOS 15.0,
+  15.1, 15.2 and 15.3 are all in scope, so Safari 15.4 additions count as incompatible.
+- `NSSupportsLiveActivities` remains in the app plist; it is ignored by iOS 15.
+
+### Known iOS 15 visual caveats
+
+These features are progressively enhanced and do not crash, but may render differently on
+iOS 15.0-15.3:
+
+- `:has()` selectors are dropped before Safari 15.4.
+- `@property` rules are ignored before Safari 16.4.
+- `color-mix()` needs the existing `@supports not (...)` fallback before Safari 16.2.
+- `CompressionStream` / `DecompressionStream` fall back to uncompressed data before 16.4.
+- `structuredClone`, `Object.hasOwn`, `Array.prototype.at` and similar 15.4 APIs must not
+  be introduced without a guard.
+
+## Downstream changes in this fork
+
+The reusable patch series is in [`patches/ios15`](patches/ios15/README.md):
+
+1. Pin the app/project deployment target to 15.0 while leaving the widget at 16.2.
+2. Build the mobile web bundle for Safari 15.
+3. Guard `AbortSignal.timeout` in the Google library import.
+4. Preserve the local `allowScripts` npm policy and add the `check:ios15` script.
+5. Add `tools/check-ios15-compat.mjs`, a cross-platform static compatibility gate.
+6. Add and harden the iOS 15 IPA workflows.
+7. Document the port and the sync procedure.
 
 ## Building an IPA with GitHub Actions
 
-`.github/workflows/build-ios15-ipa.yml` is a manual GitHub-hosted macOS build. Add this project copy to a GitHub repository, ensure the workflow file is present on its default branch, then use **Actions → Build iOS 15 IPA → Run workflow** and select the branch containing this source. The workflow builds without Apple signing, checks that the app minimum is iOS 15.0, and uploads `Muriel-iOS15.ipa` as the `Muriel-iOS15-IPA` artifact for 14 days. It does not publish a GitHub release.
+`.github/workflows/build-ios15-ipa.yml` is a manual GitHub-hosted macOS build:
 
-The baseline IPA's readable `Payload/App.app/public` files are preserved separately in `iOS 1.2.44 Web Reference` for comparison. This directory is not part of the app project or its build inputs.
+1. Install dependencies and run the iOS 15 static gate.
+2. Build `www/` with `node mobile/build.mjs`.
+3. Run `npx cap sync ios`.
+4. Re-run the static gate to catch a Capacitor rewrite.
+5. Compile unsigned with `xcodebuild`.
+6. Verify the app's `MinimumOSVersion` is `15.0`, the widget's is `16.2`, and the app
+   binary's `LC_BUILD_VERSION minos` is `15.0`.
+7. Upload `Muriel-iOS15.ipa` as the `Muriel-iOS15-IPA` artifact.
 
-## Source and fork lineage
+The upstream-style `.github/workflows/ios.yml` release workflow runs the same checks, so a
+future sync cannot silently publish an iOS 16.2-only build.
 
-This is a compatibility working copy of the supplied latest source export, not a Git checkout based on the `v1.2.0` tag. The source export has no `.git` history. The exact 1.2.0 base commit is recorded above so a future GitHub fork can start from that upstream commit and carry these compatibility changes as a downstream branch or patch series. The baseline IPA supplies the original web assets, but not the original Swift project source.
+## Verifying locally
+
+```bash
+npm ci
+npm run check:ios15
+node mobile/build.mjs
+npm test
+```
+
+`npx cap sync ios` and `xcodebuild` require macOS with Xcode. The static gate, web bundle
+and Node test suite run on Windows/Linux.
+
+## Syncing a new upstream release
+
+```bash
+git fetch upstream --tags
+
+# the patch series lives on the iOS 15 branch, so copy it out before switching
+git archive HEAD patches/ios15 | tar -x -C "$TEMP"
+
+git switch -c sync/upstream-<commit> upstream/main
+for patch in "$TEMP"/patches/ios15/000*.patch; do
+  git apply --3way "$patch"
+done
+
+npm ci
+npm run check:ios15
+node mobile/build.mjs
+npm test
+```
+
+Then run the GitHub Actions **Build iOS 15 IPA** workflow. Only merge the sync branch into
+`main` after the macOS build and an iOS 15 device smoke test pass.
 
 ## Remaining validation
 
-This environment does not include Xcode or an Apple iOS SDK, so an iOS build and device-side check must be done on a Mac. No test suite has been run as part of this preparation.
+This working environment has no Xcode or Apple iOS SDK. The following still require a Mac:
+
+- `xcodebuild` compilation against the iOS SDK.
+- Verification of the built app/widget plists and `LC_BUILD_VERSION`.
+- Device testing on iOS 15.0-15.3: background audio, lock-screen controls, interruption
+  resume, downloads, deep links, and settings layout around `:has()` rules.

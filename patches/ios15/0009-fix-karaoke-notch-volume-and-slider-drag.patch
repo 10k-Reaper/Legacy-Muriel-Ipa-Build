@@ -1,0 +1,1757 @@
+diff --git a/app.js b/app.js
+index 69d5c18..b6f9c26 100644
+--- a/app.js
++++ b/app.js
+@@ -23,6 +23,32 @@
+   } catch (e) {}
+ })();
+ 
++// CanvasRenderingContext2D.roundRect only reached Safari in 16.4. On iOS 15 every visualizer frame threw
++// "miniCtx.roundRect is not a function" (the bar and karaoke canvases stayed blank), so provide the same
++// path here. Radii are always a number in this app; arrays are handled for safety.
++(() => {
++  try {
++    const proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
++    if (!proto || typeof proto.roundRect === 'function') return;
++    proto.roundRect = function (x, y, w, h, radii) {
++      let r = Array.isArray(radii) ? radii[0] : radii;
++      r = typeof r === 'number' && isFinite(r) ? r : 0;
++      const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
++      this.moveTo(x + rr, y);
++      this.lineTo(x + w - rr, y);
++      this.quadraticCurveTo(x + w, y, x + w, y + rr);
++      this.lineTo(x + w, y + h - rr);
++      this.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
++      this.lineTo(x + rr, y + h);
++      this.quadraticCurveTo(x, y + h, x, y + h - rr);
++      this.lineTo(x, y + rr);
++      this.quadraticCurveTo(x, y, x + rr, y);
++      this.closePath();
++      return this;
++    };
++  } catch (e) {}
++})();
++
+ // localStorage (~5 MB) holds favorites, playlists, history, the queue and Encore. When it was full, every
+ // setItem threw: a song tap failed before the stream was even requested and new favorites vanished on restart.
+ // Free what can be rebuilt (the phone debug log, old Encore days) and retry; if it still doesn't fit, report
+@@ -2149,6 +2175,16 @@ document.addEventListener('DOMContentLoaded', async () => {
+       hold.moved = true;
+       if (!hold.fired) end();
+     };
++    // iOS can start a scroll without delivering pointermove, so the hold also watches touchmove: a moving
++    // finger is scrolling the list, never a hold for the song menu
++    const touchMove = (e) => {
++      if (!hold) return;
++      const t = e.touches && e.touches[0];
++      if (!t || Math.hypot(t.clientX - hold.x, t.clientY - hold.y) <= 8) return;
++      hold.moved = true;
++      end();
++    };
++    document.addEventListener('touchmove', touchMove, { passive: true, capture: true });
+     const up = (e) => {
+       if (!hold || e.pointerId !== hold.id) return;
+       const h = hold; end();
+@@ -2654,7 +2690,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+     }
+     const tvkCanvas = document.getElementById('tvk-visualizer-canvas');
+     if (tvkCanvas) {
+-      const cssW = Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
++      // with lyrics the phone shows the wave as a full-width band at the bottom of the karaoke page;
++      // tracks without lyrics keep the exact centred band they had
++      const tvRoot = document.getElementById('tv-karaoke');
++      const showsLyrics = !tvRoot || !tvRoot.classList.contains('tv-nolyrics');
++      const cssW = isPhoneApp && showsLyrics
++        ? Math.max(280, Math.round(window.innerWidth))
++        : Math.min(760, Math.max(360, Math.round(window.innerWidth * 0.64)));
+       const cssH = Math.min(84, Math.max(52, Math.round(window.innerHeight * 0.085)));
+       cachedTvkWidth = cssW;
+       cachedTvkHeight = cssH;
+@@ -3243,7 +3285,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+   }
+ 
+   const FADE_IMG_SEL = '.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img';
+-  const markImgLoaded = (e) => { const t = e.target; if (t.tagName === 'IMG' && t.matches(FADE_IMG_SEL)) t.classList.add('is-loaded'); };
++  // The queue and the long lists rebuild their rows while scrolling. Every new <img> starts at opacity 0 and
++  // fades in on its load event, so a cover that was already on screen faded again on every re-render and the
++  // list flashed. Remember which covers have loaded once and start those rows visible.
++  const loadedImgSrcs = new Set();
++  const markImgLoaded = (e) => {
++    const t = e.target;
++    if (t.tagName !== 'IMG' || !t.matches(FADE_IMG_SEL)) return;
++    t.classList.add('is-loaded');
++    const src = t.currentSrc || t.src;
++    if (src) loadedImgSrcs.add(src);
++  };
++  const markCachedThumbsLoaded = (root) => {
++    if (!root || !root.querySelectorAll) return;
++    root.querySelectorAll('img.track-row-thumb').forEach((img) => {
++      const src = img.currentSrc || img.src;
++      if (img.complete || (src && loadedImgSrcs.has(src))) img.classList.add('is-loaded');
++    });
++  };
+   document.addEventListener('load', markImgLoaded, true);
+   document.addEventListener('error', markImgLoaded, true);
+ 
+@@ -3782,6 +3841,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+       el.nativeAudio.pause();
+       el.nativeAudio.removeAttribute('src');
+       el.nativeAudio.load();
++      window.__murielVizSrc = '';
+     } catch (e) {}
+ 
+     if (hlsInstance) {
+@@ -3873,6 +3933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+         if (currentToken !== state.loadToken) return;
+         el.nativeAudio.preload = 'auto';
+         el.nativeAudio.src = streamUrl;
++        window.__murielVizSrc = streamUrl;
+         playSmooth();
+         applyAudioSettings();
+         return;
+@@ -3936,6 +3997,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+     el.nativeAudio.preload = 'auto';
+ 
+     if (data.isHls && window.Hls && Hls.isSupported()) {
++      // hls.js feeds the element a MediaSource blob; a second element cannot analyse that, so the phone
++      // visualizer falls back to its synthetic waveform for HLS streams
++      window.__murielVizSrc = '';
+       hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
+       hlsInstance.loadSource(data.streamUrl);
+       hlsInstance.attachMedia(el.nativeAudio);
+@@ -3967,6 +4031,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+       // which fetches with yt-dlp's headers; the direct URL stays as a fallback.
+       const src = pickStreamSrc(data);
+       proxyFallback = src !== data.streamUrl ? null : { token: currentToken, track, url: data.proxyUrl || '' };
++      // the phone visualizer's silent mirror element uses the proxy URL when there is one: it answers CORS,
++      // so the analyser gets real samples even though the audible element plays the direct stream
++      window.__murielVizSrc = data.proxyUrl || src;
+       el.nativeAudio.src = src;
+       playSmooth();
+     }
+@@ -3993,6 +4060,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+     const me = el.nativeAudio.error;
+     if (!me || (me.code !== 4 && me.code !== 2)) return false;
+     console.warn('Track playback: direct stream failed, trying the local proxy');
++    window.__murielVizSrc = fb.url;
+     el.nativeAudio.src = fb.url;
+     playSmooth();
+     return true;
+@@ -4908,6 +4976,8 @@ document.addEventListener('DOMContentLoaded', async () => {
+     tvIdleTimer = setTimeout(() => {
+       const tvkPanel = document.getElementById('tvk-panel');
+       if (tvkPanel && tvkPanel.classList.contains('open')) return;
++      // a finger held still on the seek bar is still using it: keep the row on screen, then try again
++      if (tvkSeekDragging) { resetTvIdleTimer(); return; }
+       if (state.isTvKaraokeOpen && el.tvKaraoke) {
+         el.tvKaraoke.classList.add('tv-idle');
+       }
+@@ -5342,7 +5412,11 @@ document.addEventListener('DOMContentLoaded', async () => {
+     el.tvKaraokeClose.addEventListener('click', closeTvKaraoke);
+   }
+   if (el.tvKaraoke) {
+-    el.tvKaraoke.addEventListener('mousemove', resetTvIdleTimer);
++    // touch devices never fire mousemove, so the controls used to fade out under a finger that was
++    // still holding the seek bar (issue: the bar vanished while dragging)
++    ['mousemove', 'pointermove', 'pointerdown', 'touchstart', 'touchmove'].forEach((evt) => {
++      el.tvKaraoke.addEventListener(evt, resetTvIdleTimer, { passive: true });
++    });
+   }
+ 
+   const btnTvkPrev = document.getElementById('btn-tvk-prev');
+@@ -7800,7 +7874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+ 
+       row.innerHTML = `
+       <span class="track-row-index">${(isAlbum && track.no) ? track.no : (idx + 1)}</span>
+-      ${!isAlbum ? `<img class="track-row-thumb" src="${escapeHtml(listThumb(rowThumb) || '')}" data-full="${escapeHtml(rowThumb || '')}" data-saved="${escapeHtml(track.thumbnail || '')}" data-art="${escapeHtml(JSON.stringify(trackArtCandidates(track)))}" alt="" loading="lazy" decoding="async" onerror="${THUMB_FALLBACK}">` : ''}
++      ${!isAlbum ? `<img class="track-row-thumb" src="${escapeHtml(listThumb(rowThumb) || '')}" data-full="${escapeHtml(rowThumb || '')}" data-saved="${escapeHtml(track.thumbnail || '')}" data-art="${escapeHtml(JSON.stringify(trackArtCandidates(track)))}" alt="" decoding="async" onerror="${THUMB_FALLBACK}">` : ''}
+       <div class="track-row-info">
+       <span class="track-row-title">${escapeHtml(track.title || 'untitled')}</span>
+       ${explicitTag ? `<span class="track-row-artist-wrap">${explicitTag}${artistSpan}</span>` : artistSpan}
+@@ -7830,6 +7904,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+         </div>
+         `;
+ 
++        // no fade replay for a cover this session has already shown (virtualised rows are recreated on scroll)
++        markCachedThumbsLoaded(row);
++
+         if (multiSel.active && multiSel.context === context) {
+           const chk = document.createElement('span');
+           chk.className = 'track-row-check';
+@@ -7893,6 +7970,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+             const isFavNow = state.favorites.some(f => isSameSong(f, track));
+             const svg = btnFav.querySelector('svg');
+             if (svg) svg.setAttribute('fill', isFavNow ? 'currentColor' : 'none');
++            updatePlaylistFavAllButton();
+           });
+         }
+ 
+@@ -8084,6 +8162,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+         const on = state.favorites.some(f => isSameSong(f, track));
+         const svg = row.querySelector('.btn-row-fav svg');
+         if (svg) svg.setAttribute('fill', on ? 'currentColor' : 'none');
++        updatePlaylistFavAllButton();
+       } }
+     ];
+     if (track.artist && !/^unknown artist$/i.test(track.artist)) {
+@@ -8133,6 +8212,61 @@ document.addEventListener('DOMContentLoaded', async () => {
+   window.addEventListener('resize', closeTrackContextMenu);
+   document.addEventListener('scroll', closeTrackContextMenu, true);
+ 
++  // A small anchored menu for header actions (share/export, select, sort). Reuses the track menu's look.
++  let actionMenuEl = null;
++  let actionMenuAnchor = null;
++  function closeActionMenu() {
++    if (actionMenuEl) actionMenuEl.remove();
++    actionMenuEl = null;
++    actionMenuAnchor = null;
++  }
++  function openActionMenu(anchor, items) {
++    if (!anchor) return;
++    if (actionMenuEl && actionMenuAnchor === anchor) { closeActionMenu(); return; }
++    closeActionMenu();
++    const menu = document.createElement('div');
++    menu.className = 'track-context-menu action-menu';
++    menu.setAttribute('role', 'menu');
++    items.forEach((item) => {
++      if (item.separator) {
++        const sep = document.createElement('div');
++        sep.className = 'action-menu-sep';
++        menu.appendChild(sep);
++        return;
++      }
++      const b = document.createElement('button');
++      b.type = 'button';
++      b.className = 'track-context-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
++      b.setAttribute('role', 'menuitem');
++      b.textContent = (item.checked ? '✓ ' : '') + T(item.label);
++      b.dataset.i18n = '';
++      b.addEventListener('click', (e) => {
++        e.stopPropagation();
++        closeActionMenu();
++        if (item.run) item.run();
++      });
++      menu.appendChild(b);
++    });
++    document.body.appendChild(menu);
++    const r = anchor.getBoundingClientRect();
++    const mr = menu.getBoundingClientRect();
++    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mr.width - 8))}px`;
++    let top = r.bottom + 8;
++    if (top + mr.height > window.innerHeight - 8) top = Math.max(8, r.top - mr.height - 8);
++    menu.style.top = `${top}px`;
++    actionMenuEl = menu;
++    actionMenuAnchor = anchor;
++  }
++  document.addEventListener('click', (e) => {
++    if (!actionMenuEl) return;
++    if (actionMenuEl.contains(e.target)) return;
++    if (actionMenuAnchor && actionMenuAnchor.contains(e.target)) return; // the trigger toggles itself
++    closeActionMenu();
++  }, true);
++  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActionMenu(); });
++  window.addEventListener('scroll', closeActionMenu, true);
++  window.addEventListener('resize', closeActionMenu);
++
+   function renderTracks(container, tracks, context = 'search') {
+     if (!container) return;
+     
+@@ -8142,9 +8276,11 @@ document.addEventListener('DOMContentLoaded', async () => {
+       scrollParent.removeEventListener('scroll', container._vScrollHandler);
+     }
+     
+-    container.innerHTML = '';
+-    
++    // a fresh list (new data, sort or filter) may reuse nothing: every row belongs to the previous track array
++    container._rowPool = new Map();
++
+     if (!tracks || tracks.length === 0) {
++      container.innerHTML = '';
+       container.style.paddingTop = '0px';
+       container.style.paddingBottom = '0px';
+       const emptyMessages = {
+@@ -8182,18 +8318,38 @@ document.addEventListener('DOMContentLoaded', async () => {
+       container._lastEndIndex = endIndex;
+       
+       const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
++      // Reuse the row elements that are already on screen. Rebuilding them dropped every cover <img>, so iOS
++      // reloaded and repainted each one on every scroll step and the list flashed. Moving an existing row keeps
++      // its decoded image untouched; only rows entering the overscan area are created.
++      const pool = container._rowPool || new Map();
++      const nextPool = new Map();
+       const fragment = document.createDocumentFragment();
+       for (let idx = startIndex; idx < endIndex; idx++) {
+-         const track = tracks[idx];
+-         const row = createTrackRow(track, idx, currentCanonicalId, context, tracks, container);
+-         if (container._hasInitialRendered) row.style.animation = 'none';
+-         fragment.appendChild(row);
++        const track = tracks[idx];
++        let row = pool.get(idx);
++        if (row && row._trackRef !== track) row = null;
++        if (!row) {
++          row = createTrackRow(track, idx, currentCanonicalId, context, tracks, container);
++          row._trackRef = track;
++          if (container._hasInitialRendered) row.style.animation = 'none';
++        }
++        nextPool.set(idx, row);
++        fragment.appendChild(row);
+       }
+-      
+-      container.innerHTML = '';
++
++      // keep a screen or so either side so a quick flick back reuses the same covers instead of rebuilding them
++      const keepFrom = Math.max(0, startIndex - 60);
++      const keepTo = Math.min(tracks.length, endIndex + 60);
++      pool.forEach((row, idx) => {
++        if (idx >= keepFrom && idx < keepTo && !nextPool.has(idx)) nextPool.set(idx, row);
++      });
++      container._rowPool = nextPool;
++
+       container.style.paddingTop = `${startIndex * itemHeight}px`;
+       container.style.paddingBottom = `${(tracks.length - endIndex) * itemHeight}px`;
+-      container.appendChild(fragment);
++      // replaceChildren removes the rows that scrolled away and installs the reused ones in one paint
++      if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
++      else { container.innerHTML = ''; container.appendChild(fragment); }
+       container._hasInitialRendered = true;
+       highlightPlayingRow();
+     }
+@@ -8715,6 +8871,51 @@ document.addEventListener('DOMContentLoaded', async () => {
+     el.favoritesSearchInput.addEventListener('input', () => renderFavoritesView());
+   }
+ 
++  // Favorites: Select and Download move into one overflow menu, and the toolbar (search + sort + overflow)
++  // slides out of the way when the list scrolls down, then comes back on the first upward swipe.
++  (function setupFavoritesToolbar() {
++    const more = document.getElementById('btn-favorites-more');
++    if (more) {
++      more.addEventListener('click', (e) => {
++        e.stopPropagation();
++        openActionMenu(more, [
++          { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-favorites'); if (b) b.click(); } },
++          { label: 'Download all', run: () => { const b = document.getElementById('btn-download-favorites'); if (b) b.click(); } }
++        ]);
++      });
++    }
++    const toolbar = document.getElementById('favorites-toolbar');
++    const view = document.getElementById('view-favorites');
++    const main = document.querySelector('.main-content');
++    if (!toolbar || !view || !main) return;
++    let lastTop = main.scrollTop;
++    let ticking = false;
++    const update = () => {
++      ticking = false;
++      if (!view.classList.contains('active')) {
++        toolbar.classList.remove('fav-toolbar-hidden');
++        lastTop = main.scrollTop;
++        return;
++      }
++      const top = main.scrollTop;
++      const delta = top - lastTop;
++      if (Math.abs(delta) < 6) return;
++      const busy = (document.activeElement && toolbar.contains(document.activeElement))
++        || Boolean(toolbar.querySelector('.sort-dropdown.open'));
++      if (top <= 24 || delta < 0) toolbar.classList.remove('fav-toolbar-hidden');
++      else if (delta > 0 && !busy) toolbar.classList.add('fav-toolbar-hidden');
++      lastTop = top;
++    };
++    main.addEventListener('scroll', () => {
++      if (ticking) return;
++      ticking = true;
++      requestAnimationFrame(update);
++    }, { passive: true });
++    new MutationObserver(() => {
++      if (view.classList.contains('active')) toolbar.classList.remove('fav-toolbar-hidden');
++    }).observe(view, { attributes: true, attributeFilter: ['class'] });
++  })();
++
+   // Sort menus of Favorites and playlists: a Material dropdown in front of the <select> (still the value), with
+   // the select's options, so the list of orders stays in one place (track-sort.js does the sorting)
+   // (var: a view can render before this line has run)
+@@ -9402,9 +9603,10 @@ document.addEventListener('DOMContentLoaded', async () => {
+     };
+ 
+     const onPointerUp = (e) => {
+-      if (e && activePointerId !== null && e.pointerId !== activePointerId) return;
++      // touchmove/touchcancel have no pointerId; only enforce it for real pointer events
++      if (e && typeof e.pointerId === 'number' && activePointerId !== null && e.pointerId !== activePointerId) return;
+       // the browser took the gesture over (it began a scroll): put the row back where it was
+-      if (e && e.type === 'pointercancel') targetIndex = startIndex;
++      if (e && (e.type === 'pointercancel' || e.type === 'touchcancel')) targetIndex = startIndex;
+       clearTimeout(pressTimer);
+       clearInterval(autoScrollTimer);
+       window.removeEventListener('pointermove', onPointerMove);
+@@ -9486,8 +9688,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+     };
+ 
+     container.addEventListener('pointerdown', onPointerDown);
+-    // once a held row is lifted the finger moves it, so the list must not scroll underneath
+-    container.addEventListener('touchmove', (e) => { if (isDragging) e.preventDefault(); }, { passive: false });
++    // Touch events fire earlier and more reliably than pointermove on iOS. A finger that moves is scrolling
++    // the list, not holding a row: cancel the hold timer before startDrag can capture the row and swallow the
++    // scroll. Once a row is really lifted, keep the list still underneath the finger.
++    container.addEventListener('touchmove', (e) => {
++      const t = e.touches && e.touches[0];
++      if (!t) return;
++      if (!isDragging) {
++        if (draggedItem && Math.hypot(t.clientX - startX, t.clientY - startY) > 8) {
++          clearTimeout(pressTimer);
++          onPointerUp(e);
++        }
++        return;
++      }
++      e.preventDefault();
++    }, { passive: false });
++    container.addEventListener('touchcancel', (e) => { if (draggedItem) onPointerUp(e); }, { passive: true });
+   }
+ 
+   initListReordering({
+@@ -9576,6 +9792,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+     if (el.playlistSort) { el.playlistSort.value = getTrackSortMode('playlist'); syncSortDropdown('playlist'); }
+     renderPlaylistDescription(pl);
+     renderPlaylistDuplicateButton(pl);
++    updatePlaylistFavAllButton();
+     const totalSec = (pl.tracks || []).reduce((acc, t) => acc + (t.duration || 0), 0);
+     const durStr = totalSec > 0 ? ` • ${formatDuration(totalSec)}` : '';
+     if (el.playlistDetailCount) el.playlistDetailCount.textContent = (query ? `${filtered.length} of ${pl.tracks.length} tracks` : `${pl.tracks.length} tracks`) + durStr;
+@@ -9679,7 +9896,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+     } catch (e) { window.prompt(T('Copy this link'), link); }
+   }
+   const btnSharePlaylist = document.getElementById('btn-share-playlist');
+-  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', () => sharePlaylist(state.playlists.find(p => p.id === state.currentPlaylistId)));
++  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', (e) => {
++    e.stopPropagation();
++    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
++    openActionMenu(btnSharePlaylist, [
++      { label: 'Share playlist link', run: () => sharePlaylist(pl) },
++      { label: 'Export as JSON file', run: () => { const b = document.getElementById('btn-export-playlist'); if (b) b.click(); } }
++    ]);
++  });
+ 
+   // a playlist someone shared: from a muriel://playlist link, the search bar or the link importer
+   let importingShare = '';
+@@ -9715,35 +9939,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+   const btnShufflePlaylist = document.getElementById('btn-shuffle-playlist');
+   if (btnShufflePlaylist) btnShufflePlaylist.addEventListener('click', () => playOpenPlaylist(true));
+ 
++  // How many songs of a playlist are already liked, so the header heart can add the rest or take them back.
++  function playlistFavoriteStats(pl) {
++    const tracks = (pl && Array.isArray(pl.tracks)) ? pl.tracks : [];
++    let liked = 0;
++    tracks.forEach((t) => { if (state.favorites.some(f => isSameSong(f, t))) liked++; });
++    return { total: tracks.length, liked, missing: tracks.length - liked, all: tracks.length > 0 && liked === tracks.length };
++  }
++
++  function updatePlaylistFavAllButton() {
++    const btn = document.getElementById('btn-fav-all-playlist');
++    if (!btn) return;
++    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
++    const stats = playlistFavoriteStats(pl);
++    const svg = btn.querySelector('svg');
++    if (svg) svg.setAttribute('fill', stats.all ? 'currentColor' : 'none');
++    const label = T(stats.all ? 'Remove all from favorites' : 'Add all to favorites');
++    btn.title = label;
++    btn.setAttribute('aria-label', label);
++    btn.classList.toggle('is-favorited', stats.all);
++  }
++
+   (function setupFavAllPlaylist() {
+     const btn = document.getElementById('btn-fav-all-playlist');
+     if (!btn) return;
+-    btn.addEventListener('click', () => {
+-      const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
++    const modal = document.getElementById('favorites-all-modal');
++    const titleEl = document.getElementById('favorites-all-title');
++    const msgEl = document.getElementById('favorites-all-msg');
++    const confirmBtn = document.getElementById('btn-confirm-favorites-all');
++    const cancelBtn = document.getElementById('btn-cancel-favorites-all');
++    let pending = 'add';
++
++    const currentPlaylist = () => state.playlists.find(p => p.id === state.currentPlaylistId);
++
++    const apply = () => {
++      const pl = currentPlaylist();
+       if (!pl || !pl.tracks) return;
+-      let added = 0;
+-      for (let i = pl.tracks.length - 1; i >= 0; i--) {
+-        const track = pl.tracks[i];
+-        if (!state.favorites.some(f => isSameSong(f, track))) {
+-          state.favorites.unshift(stampAddedAt(track));
+-          added++;
++      const stats = playlistFavoriteStats(pl);
++      if (pending === 'remove') {
++        state.favorites = state.favorites.filter(f => !pl.tracks.some(t => isSameSong(f, t)));
++        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
++        showToast(Tf('Removed {0} songs from favorites', stats.liked), 'info');
++      } else {
++        let added = 0;
++        for (let i = pl.tracks.length - 1; i >= 0; i--) {
++          const track = pl.tracks[i];
++          if (!state.favorites.some(f => isSameSong(f, track))) {
++            state.favorites.unshift(stampAddedAt(track));
++            added++;
++          }
+         }
++        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
++        showToast(added === 1 ? Tm('Added 1 song to favorites') : Tf('Added {0} songs to favorites', added), 'success');
+       }
+-      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+       updateFavoritesBadge();
+       updateFavoriteIcon();
+-      btn.title = Tf('{0} added to favorites', added);
+-      const old = btn.style.color;
+-      btn.style.color = '#ff6b8a';
+-      setTimeout(() => { btn.style.color = old; btn.title = T('Add all to favorites'); }, 2500);
+-    });
++      if (state.currentView === 'favorites') renderFavoritesView();
++      if (state.currentView === 'playlist-detail') openPlaylistDetail(state.currentPlaylistId);
++      updatePlaylistFavAllButton();
++    };
++
++    btn.addEventListener('click', () => {
++      const pl = currentPlaylist();
++      const stats = playlistFavoriteStats(pl);
++      if (!stats.total) return;
++      pending = stats.all ? 'remove' : 'add';
++      const name = (pl && pl.name) || T('this playlist');
++      if (titleEl) titleEl.textContent = T(pending === 'remove' ? 'Remove all from favorites' : 'Add all to favorites');
++      if (msgEl) {
++        msgEl.textContent = pending === 'remove'
++          ? Tf('Remove all {0} songs in "{1}" from your favorites?', stats.total, name)
++          : (stats.liked > 0
++            ? Tf('Add the remaining {0} of {1} songs in "{2}" to your favorites?', stats.missing, stats.total, name)
++            : Tf('Add all {0} songs in "{1}" to your favorites?', stats.total, name));
++      }
++      if (confirmBtn) {
++        confirmBtn.textContent = T(pending === 'remove' ? 'Remove' : 'Add');
++        confirmBtn.classList.toggle('danger', pending === 'remove');
++      }
++      if (modal) openModal(modal);
++      else if (window.confirm(msgEl ? msgEl.textContent : name)) apply();
++    });
++
++    if (cancelBtn && modal) cancelBtn.addEventListener('click', () => closeModal(modal));
++    if (confirmBtn && modal) confirmBtn.addEventListener('click', () => { closeModal(modal); apply(); });
+   })();
+ 
+   (function setupPlaylistRename() {
+     const btn = document.getElementById('btn-rename-playlist');
+     const titleEl = document.getElementById('playlist-detail-title');
+     if (!btn || !titleEl) return;
+-    btn.addEventListener('click', () => {
++    const startRename = () => {
+       const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+       if (!pl || titleEl.querySelector('input')) return;
+       const input = document.createElement('input');
+@@ -9772,6 +10058,56 @@ document.addEventListener('DOMContentLoaded', async () => {
+         else if (e.key === 'Escape') finish(false);
+       });
+       input.addEventListener('blur', () => finish(true));
++    };
++    btn.addEventListener('click', startRename);
++    // the visible playlist name is the rename control now, instead of another header button
++    titleEl.classList.add('playlist-title-editable');
++    titleEl.title = T('Tap to rename');
++    titleEl.setAttribute('role', 'button');
++    titleEl.tabIndex = 0;
++    titleEl.addEventListener('click', (e) => { e.stopPropagation(); startRename(); });
++    titleEl.addEventListener('keydown', (e) => {
++      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startRename(); }
++    });
++  })();
++
++  // Playlist overflow: Select tracks, duplicate cleanup and the manual/sort order live here instead of the
++  // already crowded action row.
++  (function setupPlaylistMoreMenu() {
++    const btn = document.getElementById('btn-playlist-more');
++    if (!btn) return;
++    const sortLabel = () => {
++      if (!el.playlistSort || el.playlistSort.selectedIndex < 0) return T('Manual order');
++      return el.playlistSort.options[el.playlistSort.selectedIndex].textContent;
++    };
++    const openSortMenu = () => {
++      if (!el.playlistSort) return;
++      openActionMenu(btn, [...el.playlistSort.options].map((o) => ({
++        label: o.textContent,
++        checked: o.value === el.playlistSort.value,
++        run: () => {
++          if (el.playlistSort.value === o.value) return;
++          el.playlistSort.value = o.value;
++          el.playlistSort.dispatchEvent(new Event('change'));
++        }
++      })));
++    };
++    btn.addEventListener('click', (e) => {
++      e.stopPropagation();
++      const items = [
++        { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-playlist'); if (b) b.click(); } },
++        { separator: true },
++        { label: `Sort playlist: ${sortLabel()}`, run: openSortMenu }
++      ];
++      const dup = el.btnDedupePlaylist;
++      const dupCount = dup ? Number(dup.dataset.duplicates || 0) : 0;
++      if (dupCount > 0 && dup) {
++        items.splice(2, 0, {
++          label: dupCount === 1 ? 'Remove 1 duplicate' : `Remove ${dupCount} duplicates`,
++          run: () => dup.click()
++        });
++      }
++      openActionMenu(btn, items);
+     });
+   })();
+ 
+@@ -10771,14 +11107,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+     if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
+   }
+ 
+-  function setVolumeFromSlider(slider) {
+-    const value = Number(slider && slider.value);
+-    if (!Number.isFinite(value)) return;
+-    state.volume = Math.max(0, Math.min(1, value));
+-    state.isMuted = false;
++  function applyVolumeValue(value, { silent = false, keepMute = false } = {}) {
++    const next = Number(value);
++    if (!Number.isFinite(next)) return;
++    state.volume = Math.max(0, Math.min(1, next));
++    if (!keepMute) state.isMuted = false;
+     syncVolumeControls();
+     persistVolumeState();
+     applyAudioSettings();
++    // iOS ignores <audio>.volume (the hardware buttons own it), so the header/karaoke bars move the
++    // system volume through MurielVolume (mobile/mobile-ui.js + MurielVolumePlugin in AppDelegate.swift).
++    // `silent` marks a value that came from iOS itself, which must not be written back.
++    if (!silent && window.MurielSystemVolume) window.MurielSystemVolume.set(state.volume);
++  }
++
++  function setVolumeFromSlider(slider) {
++    applyVolumeValue(slider && slider.value);
+   }
+ 
+   syncVolumeControls();
+@@ -11373,8 +11717,31 @@ document.addEventListener('DOMContentLoaded', async () => {
+     });
+   }
+ 
++  // Custom properties live on :root, so writing one invalidates the style of the whole document. On a phone
++  // that made these settings stutter while a value was dragged. Keep the label live but apply the newest value
++  // at most once per frame, and save to localStorage when the finger is lifted.
++  const sliderFrame = (apply) => {
++    let raf = 0;
++    let next;
++    return (value) => {
++      next = value;
++      if (raf) return;
++      raf = requestAnimationFrame(() => {
++        raf = 0;
++        apply(next);
++      });
++    };
++  };
++
+   if (el.sliderFontScale) {
++    const applyFontScale = sliderFrame((val) => {
++      if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
++      document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
++    });
+     el.sliderFontScale.addEventListener('input', (e) => {
++      applyFontScale(parseInt(e.target.value, 10));
++    });
++    el.sliderFontScale.addEventListener('change', (e) => {
+       const val = parseInt(e.target.value, 10);
+       if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
+       document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
+@@ -11463,7 +11830,15 @@ document.addEventListener('DOMContentLoaded', async () => {
+   }, 50);
+ 
+   if (el.sliderCornerRadius) {
++    const applyCornerRadius = sliderFrame((val) => {
++      if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
++      document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
++      document.documentElement.style.setProperty('--md-shape-corner-m', `${Math.max(0, val - 4)}px`);
++    });
+     el.sliderCornerRadius.addEventListener('input', (e) => {
++      applyCornerRadius(parseInt(e.target.value, 10));
++    });
++    el.sliderCornerRadius.addEventListener('change', (e) => {
+       const val = parseInt(e.target.value, 10);
+       if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
+       document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
+@@ -11473,7 +11848,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+   }
+ 
+   if (el.sliderUiAlpha) {
++    const applyUiAlpha = sliderFrame((val) => {
++      if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
++      document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
++    });
+     el.sliderUiAlpha.addEventListener('input', (e) => {
++      applyUiAlpha(Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100)));
++    });
++    el.sliderUiAlpha.addEventListener('change', (e) => {
+       const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
+       if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
+       document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
+@@ -11494,7 +11876,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+   }
+ 
+   if (el.sliderTextAlpha) {
++    const applyTextAlpha = sliderFrame((val) => {
++      if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
++      document.documentElement.style.setProperty('--text-alpha', `${val}%`);
++    });
+     el.sliderTextAlpha.addEventListener('input', (e) => {
++      applyTextAlpha(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100)));
++    });
++    el.sliderTextAlpha.addEventListener('change', (e) => {
+       const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
+       if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
+       document.documentElement.style.setProperty('--text-alpha', `${val}%`);
+@@ -11740,7 +12129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+   }
+ 
+   function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
+-  function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); }
++  function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); }
+   function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
+   function onBackgroundChanged(kind, enabled) {
+     if (!getAdv('ui_alpha_auto', true)) return;
+@@ -11820,11 +12209,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+     if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
+     document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
+ 
++    const applyCoverBrightness = typeof sliderFrame === 'function' ? sliderFrame((v) => {
++      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
++      document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
++    }) : null;
++
+     sliderCoverBgBrightness.addEventListener('input', (e) => {
++      const v = parseInt(e.target.value, 10);
++      if (applyCoverBrightness) applyCoverBrightness(v);
++      else {
++        if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
++        document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
++      }
++    });
++    sliderCoverBgBrightness.addEventListener('change', (e) => {
+       const v = parseInt(e.target.value, 10);
+       if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
+-      localStorage.setItem('muriel_cover_bg_brightness', String(v));
+       document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
++      localStorage.setItem('muriel_cover_bg_brightness', String(v));
+     });
+   }
+ 
+@@ -12317,6 +12719,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+     Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
+     input.addEventListener('input', onChange);
+   }
++  // On iOS a range input only starts dragging when the finger lands on the knob; touching the track just
++  // jumps there. Move the value ourselves for touches anywhere on the bar, so the whole bar drags.
++  // The move/up listeners live on window: an element-only (or captured) drag stops reporting as soon as the
++  // finger leaves the bar, which made the value freeze and left the minimums (0 / 20 / 30) out of reach.
++  function enableRangeDragAnywhere(input) {
++    let dragKind = null; // 'touch' | 'pointer'
++    let pointerId = null;
++    let removeWindowListeners = null;
++    const isVolume = () => input.classList.contains('volume-range');
++    const valueFromX = (clientX) => {
++      const rect = input.getBoundingClientRect();
++      if (!rect.width) return null;
++      const min = input.min === '' ? 0 : parseFloat(input.min);
++      const max = input.max === '' ? 100 : parseFloat(input.max);
++      if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return null;
++      let value = min + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (max - min);
++      const step = parseFloat(input.step);
++      if (Number.isFinite(step) && step > 0) {
++        value = min + Math.round((value - min) / step) * step;
++        const decimals = (String(input.step).split('.')[1] || '').length;
++        value = Number(value.toFixed(Math.min(decimals, 10)));
++      }
++      return Math.max(min, Math.min(max, value));
++    };
++    const apply = (clientX) => {
++      const value = valueFromX(clientX);
++      if (value === null || Number(input.value) === value) return;
++      input.value = String(value);
++      input.dispatchEvent(new Event('input', { bubbles: true }));
++    };
++    const finish = () => {
++      if (!dragKind) return;
++      dragKind = null;
++      pointerId = null;
++      input.classList.remove('sl-dragging');
++      if (removeWindowListeners) { removeWindowListeners(); removeWindowListeners = null; }
++      input.dispatchEvent(new Event('change', { bubbles: true }));
++      if (isVolume() && window.MurielSystemVolume && window.MurielSystemVolume.end) window.MurielSystemVolume.end();
++    };
++    const onTouchMove = (e) => {
++      if (dragKind !== 'touch') return;
++      const touch = e.touches && e.touches[0];
++      if (!touch) return;
++      e.preventDefault(); // keep the page from scrolling while the bar is being dragged
++      apply(touch.clientX);
++    };
++    const onTouchEnd = () => { if (dragKind === 'touch') finish(); };
++    const onPointerMove = (e) => {
++      if (dragKind !== 'pointer' || e.pointerId !== pointerId) return;
++      e.preventDefault();
++      apply(e.clientX);
++    };
++    const onPointerEnd = (e) => {
++      if (dragKind !== 'pointer' || e.pointerId !== pointerId) return;
++      finish();
++    };
++    const begin = (kind) => {
++      dragKind = kind;
++      input.classList.add('sl-dragging');
++      if (isVolume() && window.MurielSystemVolume && window.MurielSystemVolume.begin) window.MurielSystemVolume.begin();
++      window.addEventListener('touchmove', onTouchMove, { passive: false });
++      window.addEventListener('touchend', onTouchEnd);
++      window.addEventListener('touchcancel', onTouchEnd);
++      window.addEventListener('pointermove', onPointerMove, { passive: false });
++      window.addEventListener('pointerup', onPointerEnd);
++      window.addEventListener('pointercancel', onPointerEnd);
++      removeWindowListeners = () => {
++        window.removeEventListener('touchmove', onTouchMove, { passive: false });
++        window.removeEventListener('touchend', onTouchEnd);
++        window.removeEventListener('touchcancel', onTouchEnd);
++        window.removeEventListener('pointermove', onPointerMove, { passive: false });
++        window.removeEventListener('pointerup', onPointerEnd);
++        window.removeEventListener('pointercancel', onPointerEnd);
++      };
++    };
++    // Touch events are used for fingers (reliable on iOS even when the finger leaves the control) and pointer
++    // events only for a pen. The mouse already drags natively from anywhere, so leave it alone.
++    input.addEventListener('touchstart', (e) => {
++      if (dragKind || e.touches.length !== 1) return;
++      e.preventDefault();
++      begin('touch');
++      apply(e.touches[0].clientX);
++    }, { passive: false });
++    input.addEventListener('pointerdown', (e) => {
++      if (dragKind || e.pointerType === 'mouse' || e.pointerType === 'touch') return;
++      e.preventDefault();
++      pointerId = e.pointerId;
++      begin('pointer');
++      apply(e.clientX);
++    });
++  }
+   function enhanceSliders(root) {
+     (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
+       if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
+@@ -12332,6 +12825,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+         wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
+       };
+       watchSliderValue(input, sync);
++      enableRangeDragAnywhere(input);
+       sync();
+     });
+   }
+@@ -19503,7 +19997,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+   function renderPlaylistDuplicateButton(pl) {
+     if (!el.btnDedupePlaylist || !pl) return;
+     const duplicates = pl.tracks.length - dedupeTracks(pl.tracks, isSameTrack, getTrackCanonicalId).length;
+-    el.btnDedupePlaylist.classList.toggle('hidden', duplicates === 0);
++    // the button stays out of the header; the "..." menu shows it only while there is something to remove
++    el.btnDedupePlaylist.classList.add('hidden');
++    el.btnDedupePlaylist.dataset.duplicates = String(duplicates);
+     if (el.btnDedupePlaylistLabel) {
+       el.btnDedupePlaylistLabel.textContent = duplicates === 1 ? 'Remove 1 duplicate' : `Remove ${duplicates} duplicates`;
+     }
+@@ -19784,9 +20280,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+       const a = el.nativeAudio;
+       return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
+     };
+-    slider.addEventListener('pointerdown', () => { tvkSeekDragging = true; });
++    const startSeekDrag = () => { tvkSeekDragging = true; resetTvIdleTimer(); };
++    const endSeekDrag = () => { tvkSeekDragging = false; resetTvIdleTimer(); };
++    slider.addEventListener('pointerdown', startSeekDrag);
++    slider.addEventListener('touchstart', startSeekDrag, { passive: true });
+     slider.addEventListener('input', () => {
+       tvkSeekDragging = true;
++      resetTvIdleTimer();
+       const t = (Number(slider.value) / 1000) * durNow();
+       const curEl = document.getElementById('tvk-time-current');
+       if (curEl) curEl.textContent = formatDuration(t);
+@@ -19799,8 +20299,12 @@ document.addEventListener('DOMContentLoaded', async () => {
+         updateMediaPositionState();
+       }
+       tvkSeekDragging = false;
++      resetTvIdleTimer();
+     });
+-    slider.addEventListener('pointerup', () => { setTimeout(() => { tvkSeekDragging = false; }, 0); });
++    slider.addEventListener('pointerup', () => { setTimeout(endSeekDrag, 0); });
++    slider.addEventListener('pointercancel', () => { setTimeout(endSeekDrag, 0); });
++    slider.addEventListener('touchend', () => { setTimeout(endSeekDrag, 0); }, { passive: true });
++    slider.addEventListener('touchcancel', () => { setTimeout(endSeekDrag, 0); }, { passive: true });
+     // the slider must not start a lyrics drag or hide the controls
+     slider.addEventListener('mousemove', (e) => e.stopPropagation());
+   })();
+@@ -20613,6 +21117,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+     next: () => playNext(),
+     prev: () => playPrev(),
+     seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
++    // iOS reports its own volume changes (hardware buttons) and the first value on launch; neither may be
++    // written back to the system, and the launch value must not undo the in-app mute.
++    setVolume: (value, opts) => applyVolumeValue(value, { silent: true, keepMute: !!(opts && opts.keepMute) }),
+     toggleShuffle: () => { if (el.btnShuffle) el.btnShuffle.click(); return state.isShuffle; },
+     toggleRepeat: () => { if (el.btnRepeat) el.btnRepeat.click(); return state.repeatMode; },
+     isFavorite: (t) => state.favorites.some((f) => isSameSong(f, t)),
+diff --git a/index.html b/index.html
+index ce63744..b4fc7ad 100644
+--- a/index.html
++++ b/index.html
+@@ -311,18 +311,11 @@
+       </section>
+ 
+       <section class="content-view" id="view-favorites">
+-        <div class="view-header">
+-          <div>
+-            <h2>Favorites</h2>
+-            <span class="view-subtitle" id="favorites-subtitle" data-i18n>0 tracks saved</span>
++        <div class="fav-toolbar" id="favorites-toolbar">
++          <div class="view-search-box" id="favorites-search-box">
++            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
++            <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
+           </div>
+-          <button class="btn-outline-pill" id="btn-select-favorites" title="Select tracks" aria-label="Select tracks">
+-            <span>Select</span>
+-          </button>
+-          <button class="btn-outline-pill" id="btn-download-favorites" title="Download all favorites" aria-label="Download all favorites">
+-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+-            <span>Download all</span>
+-          </button>
+           <select class="pill-select" id="favorites-sort" title="Sort favorites" aria-label="Sort favorites" hidden>
+             <option value="manual">Manual order</option>
+             <option value="added-desc">Date added (newest)</option>
+@@ -341,10 +334,20 @@
+             </button>
+             <div class="m3-dropdown-menu" id="favorites-sort-menu" role="listbox"></div>
+           </div>
+-        </div>
+-        <div class="view-search-box" id="favorites-search-box">
+-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
+-          <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
++          <button class="btn-icon-pill" id="btn-favorites-more" title="More options" aria-label="More options" aria-haspopup="menu">
++            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle></svg>
++          </button>
++          <button class="hidden" id="btn-select-favorites" title="Select tracks" aria-label="Select tracks">
++            <span>Select</span>
++          </button>
++          <button class="hidden" id="btn-download-favorites" title="Download all favorites" aria-label="Download all favorites">
++            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
++            <span>Download all</span>
++          </button>
++          <div class="hidden">
++            <h2>Favorites</h2>
++            <span class="view-subtitle" id="favorites-subtitle" data-i18n>0 tracks saved</span>
++          </div>
+         </div>
+         <div class="tracks-list" id="favorites-tracks-list">
+           <div class="empty-hint">No favorite tracks yet. Click the heart icon on any song to save it.</div>
+@@ -453,10 +456,23 @@
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+                 <span>Shuffle</span>
+               </button>
+-              <button class="btn-icon-pill" id="btn-share-playlist" title="Share playlist" aria-label="Share playlist">
++              <button class="btn-icon-pill" id="btn-share-playlist" title="Share or export" aria-label="Share or export" aria-haspopup="menu">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>
+               </button>
+-              <button class="btn-outline-pill hidden" id="btn-dedupe-playlist" title="Remove duplicate tracks">
++              <button class="btn-icon-pill" id="btn-download-playlist" title="Download all songs" aria-label="Download all songs">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
++              </button>
++              <button class="btn-icon-pill" id="btn-fav-all-playlist" title="Add all to favorites" aria-label="Add all to favorites">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
++              </button>
++              <button class="btn-icon-pill" id="btn-playlist-more" title="More options" aria-label="More options" aria-haspopup="menu">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle></svg>
++              </button>
++              <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
++              </button>
++              <!-- kept in the DOM for their handlers, but now reached from the "..." and Share menus -->
++              <button class="hidden" id="btn-dedupe-playlist" title="Remove duplicate tracks">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                 <span id="btn-dedupe-playlist-label" data-i18n>Remove duplicates</span>
+               </button>
+@@ -470,7 +486,7 @@
+                 <option value="album-asc">Album</option>
+                 <option value="duration-asc">Duration (shortest)</option>
+               </select>
+-              <div class="m3-dropdown sort-dropdown" id="playlist-sort-dropdown">
++              <div class="m3-dropdown sort-dropdown hidden" id="playlist-sort-dropdown">
+                 <button class="m3-dropdown-trigger" id="playlist-sort-trigger" type="button" title="Sort playlist" aria-label="Sort playlist" aria-haspopup="listbox">
+                   <svg class="sort-dropdown-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="10" y1="18" x2="14" y2="18"></line></svg>
+                   <span id="playlist-sort-label">Manual order</span>
+@@ -478,25 +494,15 @@
+                 </button>
+                 <div class="m3-dropdown-menu" id="playlist-sort-menu" role="listbox"></div>
+               </div>
+-              <button class="btn-outline-pill" id="btn-select-playlist" title="Select tracks" aria-label="Select tracks">
++              <button class="hidden" id="btn-select-playlist" title="Select tracks" aria-label="Select tracks">
+                 <span>Select</span>
+               </button>
+-              <button class="btn-outline-pill" id="btn-download-playlist" title="Download all songs" aria-label="Download all songs">
+-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+-                <span id="btn-download-playlist-label">Download all</span>
+-              </button>
+-              <button class="btn-icon-pill" id="btn-fav-all-playlist" title="Add all to favorites" aria-label="Add all to favorites">
+-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+-              </button>
+-              <button class="btn-icon-pill" id="btn-rename-playlist" title="Rename playlist" aria-label="Rename playlist">
++              <button class="hidden" id="btn-rename-playlist" title="Rename playlist" aria-label="Rename playlist">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+               </button>
+-              <button class="btn-icon-pill" id="btn-export-playlist" title="Export as JSON file" aria-label="Export as JSON file">
++              <button class="hidden" id="btn-export-playlist" title="Export as JSON file" aria-label="Export as JSON file">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="12" x2="12" y2="18"></line><polyline points="9 15 12 18 15 15"></polyline></svg>
+               </button>
+-              <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
+-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+-              </button>
+             </div>
+           </div>
+         </div>
+@@ -2575,6 +2581,17 @@
+   </div>
+ 
+ 
++  <div class="modal-backdrop hidden" id="favorites-all-modal">
++    <div class="dialog-card">
++      <h3 id="favorites-all-title">Add all to favorites</h3>
++      <p id="favorites-all-msg" style="margin: 0 0 16px; color: var(--md-sys-color-on-surface-variant); font-size: calc(14px * var(--font-scale, 1));"></p>
++      <div class="dialog-actions">
++        <button class="btn-outline-pill" id="btn-cancel-favorites-all">Cancel</button>
++        <button class="btn-pill-primary" id="btn-confirm-favorites-all">Add</button>
++      </div>
++    </div>
++  </div>
++
+   <div class="modal-backdrop hidden" id="tools-install-modal">
+     <div class="dialog-card tools-install-card" style="width: 420px;">
+       <div class="dialog-header">
+diff --git a/ios/App/App/AppDelegate.swift b/ios/App/App/AppDelegate.swift
+index f26c366..00157d5 100644
+--- a/ios/App/App/AppDelegate.swift
++++ b/ios/App/App/AppDelegate.swift
+@@ -1,5 +1,6 @@
+ import UIKit
+ import AVFoundation
++import MediaPlayer
+ import WebKit
+ import Capacitor
+ 
+@@ -70,6 +71,7 @@ class MurielBridgeViewController: CAPBridgeViewController {
+     override open func capacitorDidLoad() {
+         bridge?.registerPluginInstance(MurielLiveActivityPlugin())
+         bridge?.registerPluginInstance(MurielAudioSessionPlugin())
++        bridge?.registerPluginInstance(MurielVolumePlugin())
+     }
+ }
+ 
+@@ -123,3 +125,81 @@ public class MurielAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
+         awake = .invalid
+     }
+ }
++
++// The volume bars on a phone (mobile/mobile-ui.js): iOS ignores an <audio> element's volume, so a bar moves
++// the system volume with an off-screen MPVolumeView. Changes made with the hardware buttons (or Control
++// Center) are observed on the audio session and sent back, keeping the page's bars in step.
++@objc(MurielVolumePlugin)
++public class MurielVolumePlugin: CAPPlugin, CAPBridgedPlugin {
++    public let identifier = "MurielVolumePlugin"
++    public let jsName = "MurielVolume"
++    public let pluginMethods: [CAPPluginMethod] = [
++        CAPPluginMethod(name: "getVolume", returnType: CAPPluginReturnPromise),
++        CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
++    ]
++
++    private let volumeView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 10, height: 10))
++    private var volumeObservation: NSKeyValueObservation?
++
++    override public func load() {
++        DispatchQueue.main.async { [weak self] in self?.installVolumeView() }
++        // KVO on outputVolume is public API (the AVSystemController notification is not) and works on iOS 15
++        volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
++            guard let self = self, let volume = change.newValue else { return }
++            DispatchQueue.main.async {
++                self.notifyListeners("volumeChange", data: ["volume": Double(volume)])
++            }
++        }
++    }
++
++    @objc func getVolume(_ call: CAPPluginCall) {
++        call.resolve(["volume": Double(AVAudioSession.sharedInstance().outputVolume)])
++    }
++
++    @objc func setVolume(_ call: CAPPluginCall) {
++        guard let raw = call.getDouble("volume") else {
++            call.reject("volume is required")
++            return
++        }
++        let volume = Float(max(0, min(1, raw)))
++        DispatchQueue.main.async { [weak self] in
++            guard let self = self else {
++                call.reject("system volume control unavailable")
++                return
++            }
++            if self.apply(volume) {
++                call.resolve(["volume": Double(volume)])
++                return
++            }
++            // the MPVolumeView's slider appears a moment after the view is added to a window
++            self.installVolumeView()
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
++                if self.apply(volume) {
++                    call.resolve(["volume": Double(volume)])
++                } else {
++                    call.reject("system volume control unavailable")
++                }
++            }
++        }
++    }
++
++    private func installVolumeView() {
++        guard volumeView.superview == nil else { return }
++        volumeView.showsRouteButton = false
++        // not hidden: a hidden MPVolumeView may not install its slider, and 0.01 is invisible anyway
++        volumeView.alpha = 0.01
++        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
++        let windows = scenes.flatMap { $0.windows }
++        let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first
++        window?.addSubview(volumeView)
++    }
++
++    @discardableResult
++    private func apply(_ volume: Float) -> Bool {
++        installVolumeView()
++        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return false }
++        slider.value = volume
++        slider.sendActions(for: .valueChanged)
++        return true
++    }
++}
+diff --git a/mobile/mobile-ui.js b/mobile/mobile-ui.js
+index 1e81309..10882ea 100644
+--- a/mobile/mobile-ui.js
++++ b/mobile/mobile-ui.js
+@@ -3,12 +3,15 @@
+ 
+ // Background playback: iOS suspends Web Audio when the app is backgrounded or the screen locks,
+ // but keeps a plain <audio> element playing (and on the lock screen). So on iPhone the engine never
+-// routes the element through an AudioContext. Speed/pitch still work (they're element properties);
+-// EQ, reverb, distortion and the visualizer need the graph and are off. app.js builds the engine on
+-// DOMContentLoaded, which hasn't fired yet when this script runs.
++// routes the audible element through an AudioContext. Speed/pitch still work (they're element properties);
++// EQ, reverb and distortion need the graph and stay off. The visualizer gets its data from a second,
++// silent element instead (see the module below). app.js builds the engine on DOMContentLoaded, which
++// hasn't fired yet when this script runs.
+ (() => {
+   // desktop's default text scale (1.25x) is sized for a monitor; phones start at 1.0x unless the user picked one
+   if (!localStorage.getItem('muriel_font_scale')) localStorage.setItem('muriel_font_scale', '80');
++  // the phone can draw a visualizer now, so show it with lyrics too unless the user turned it off
++  if (!localStorage.getItem('muriel_tvk_visualizer_lyrics')) localStorage.setItem('muriel_tvk_visualizer_lyrics', 'true');
+   const Engine = window.MurielAudioEngine;
+   if (!Engine) return;
+   Engine.prototype.init = function (audioElement) { this.__element = audioElement || this.__element; };
+@@ -18,6 +21,261 @@
+   };
+ })();
+ 
++// iPhone: an <audio> element's volume is read-only (the hardware buttons own it), so the volume bars in the
++// player and in fullscreen karaoke move the system volume through MurielVolume (MPVolumeView;
++// MurielVolumePlugin in ios/App/App/AppDelegate.swift). Changes made with the hardware buttons come back
++// as 'volumeChange' and move Muriel's bars with them.
++(() => {
++  const Cap = window.Capacitor;
++  if (!Cap || Cap.getPlatform() !== 'ios' || typeof Cap.registerPlugin !== 'function') return;
++  const plugin = Cap.registerPlugin('MurielVolume');
++  let lastSet = -1;
++  let lastSetAt = 0;
++  let dragging = false;
++  window.MurielSystemVolume = {
++    begin() { dragging = true; },
++    end() { dragging = false; },
++    set(value) {
++      const v = Math.max(0, Math.min(1, Number(value)));
++      if (!Number.isFinite(v)) return;
++      lastSet = v;
++      lastSetAt = Date.now();
++      const at = lastSetAt;
++      // only ignore the echo of our own write, not a later hardware change to the same level
++      setTimeout(() => { if (lastSetAt === at) lastSet = -1; }, 800);
++      Promise.resolve(plugin.setVolume({ volume: v })).catch(() => {});
++    },
++  };
++  const adopt = (value, initial) => {
++    const v = Number(value);
++    if (!Number.isFinite(v) || dragging) return;
++    if (lastSet >= 0 && Math.abs(v - lastSet) < 0.02) return;
++    // an inactive audio session can report 0 at launch; don't lose the saved level to that
++    if (initial && v === 0 && window.MurielCore && Number(window.MurielCore.state.volume) > 0) return;
++    if (window.MurielCore && window.MurielCore.setVolume) window.MurielCore.setVolume(v, { keepMute: !!initial });
++  };
++  Promise.resolve(plugin.addListener('volumeChange', (data) => adopt(data && data.volume, false))).catch(() => {});
++  const start = () => {
++    lastSet = -1;
++    Promise.resolve(plugin.getVolume()).then((r) => adopt(r && r.volume, true)).catch(() => {});
++  };
++  if (window.MurielCore) start(); else window.addEventListener('muriel:ready', start, { once: true });
++})();
++
++// ---- visualizer on iPhone ----
++// The audible <audio> element cannot go through Web Audio (iOS would stop it when the screen locks), so a
++// hidden second element plays the same song into an AnalyserNode. Its output goes through a gain of 0,
++// not through element.muted (a muted element also silences the analyser). The mirror only runs while the
++// now-playing sheet or the karaoke page is open and the app is in the foreground, and it is never allowed
++// to make a sound if the graph could not be built.
++(() => {
++  try {
++  const Engine = window.MurielAudioEngine;
++  if (!Engine) return;
++
++  let mirror = null;
++  let ctx = null;
++  let analyser = null;
++  let graphFailed = false;
++  let wanted = false;
++  let lastPlayAttempt = 0;
++  let mirrorStartedAt = 0;
++  let mirrorBlocked = false;
++  let userPauseAt = 0;
++  // app.js only needs frequencyBinCount from this; when Web Audio cannot start at all the synthetic
++  // spectrum below still has a buffer to fill
++  const stubAnalyser = {
++    frequencyBinCount: 64,
++    getByteFrequencyData(buffer) { if (buffer && buffer.fill) buffer.fill(0); },
++  };
++
++  const mainAudio = () => document.getElementById('native-audio') || document.querySelector('audio:not([data-viz-mirror])');
++
++  function build() {
++    if (analyser || graphFailed) return analyser;
++    const AC = window.AudioContext || window.webkitAudioContext;
++    if (!AC) { graphFailed = true; return null; }
++    try {
++      ctx = new AC();
++      analyser = ctx.createAnalyser();
++      analyser.fftSize = 128;
++      analyser.smoothingTimeConstant = 0.8;
++    } catch (e) {
++      graphFailed = true;
++      analyser = null;
++      return null;
++    }
++    // The mirror is only an optimisation. If iOS refuses the media-element source, the analyser stays
++    // silent (zeros) and getFrequencyData draws the synthetic wave instead of a flat line.
++    try {
++      mirror = document.createElement('audio');
++      mirror.id = 'muriel-viz-audio';
++      mirror.dataset.vizMirror = '1';
++      mirror.setAttribute('playsinline', '');
++      mirror.setAttribute('aria-hidden', 'true');
++      mirror.crossOrigin = 'anonymous';
++      mirror.preload = 'none';
++      mirror.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
++      document.body.appendChild(mirror);
++      const source = ctx.createMediaElementSource(mirror);
++      const silent = ctx.createGain();
++      silent.gain.value = 0;
++      source.connect(analyser);
++      analyser.connect(silent);
++      silent.connect(ctx.destination);
++    } catch (e) {
++      try { if (mirror && mirror.parentNode) mirror.parentNode.removeChild(mirror); } catch (_) {}
++      mirror = null;
++    }
++    return analyser;
++  }
++
++  function tryStartMirror() {
++    if (!mirror || !mirror.paused || mirrorBlocked) return;
++    if (Date.now() - lastPlayAttempt < 500) return;
++    lastPlayAttempt = Date.now();
++    mirrorStartedAt = lastPlayAttempt;
++    mirror.play().catch(() => {});
++  }
++
++  function sync(resetTime) {
++    if (!wanted || !analyser || !mirror || mirrorBlocked) return;
++    const a = mainAudio();
++    if (!a) return;
++    // app.js hands over the CORS-friendly proxy URL when the audible element plays a direct stream;
++    // '' means the source cannot be mirrored (an hls.js MediaSource blob)
++    const hint = window.__murielVizSrc;
++    const src = hint === undefined ? (a.currentSrc || a.src) : hint;
++    if (!src) {
++      if (!mirror.paused) mirror.pause();
++      return;
++    }
++    if (mirror.src !== src) {
++      mirror.src = src;
++      try { mirror.load(); } catch (e) {}
++      resetTime = true;
++    }
++    if (a.paused) {
++      if (!mirror.paused) mirror.pause();
++      return;
++    }
++    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
++    mirror.playbackRate = a.playbackRate || 1;
++    if (resetTime || Math.abs((mirror.currentTime || 0) - (a.currentTime || 0)) > 1.5) {
++      try { mirror.currentTime = Math.max(0, a.currentTime || 0); } catch (e) {}
++    }
++    if (mirror.paused && Date.now() - lastPlayAttempt > 500) {
++      tryStartMirror();
++    }
++  }
++
++  function setActive(on) {
++    wanted = !!on;
++    if (!wanted) {
++      if (mirror && !mirror.paused) { try { mirror.pause(); } catch (e) {} }
++      if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
++      return;
++    }
++    build();
++    if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
++    sync(true);
++  }
++
++  const audio = mainAudio();
++  if (audio) {
++    // remember when the app itself pauses the song, so a pause caused by the mirror is not mistaken for it
++    const nativePause = audio.pause.bind(audio);
++    audio.pause = function (...args) {
++      userPauseAt = Date.now();
++      return nativePause(...args);
++    };
++    const follow = () => { if (wanted) sync(true); };
++    audio.addEventListener('play', follow);
++    audio.addEventListener('playing', follow);
++    audio.addEventListener('seeking', follow);
++    audio.addEventListener('seeked', follow);
++    audio.addEventListener('pause', () => {
++      const mirrorWasPlaying = !!(mirror && !mirror.paused);
++      if (mirror && !mirror.paused) mirror.pause();
++      if (!wanted || mirrorBlocked || !mirrorWasPlaying) return;
++      const userPaused = Date.now() - userPauseAt < 400;
++      const justStarted = Date.now() - mirrorStartedAt < 1500;
++      if (!userPaused && justStarted) {
++        // iOS refused the second element. Stop mirroring for this session and restart the real song
++        // once app.js has finished reacting to the pause.
++        mirrorBlocked = true;
++        setTimeout(() => { try { audio.play().catch(() => {}); } catch (e) {} }, 250);
++      }
++    });
++    audio.addEventListener('ratechange', () => { if (mirror) mirror.playbackRate = audio.playbackRate || 1; });
++  }
++
++  // a gesture is the only moment iOS lets the AudioContext start
++  ['touchstart', 'pointerdown', 'click', 'keydown'].forEach((evt) => {
++    document.addEventListener(evt, () => {
++      // a context built outside a gesture stays suspended; any later tap is allowed to start it
++      if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
++      if (wanted) sync(false);
++    }, { passive: true, capture: true });
++  });
++
++  document.addEventListener('visibilitychange', () => {
++    if (document.hidden) {
++      if (mirror && !mirror.paused) { try { mirror.pause(); } catch (e) {} }
++      if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
++    } else if (wanted) {
++      if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
++      sync(true);
++    }
++  });
++
++  // the sheet and the karaoke page are the phone screens that draw a visualizer
++  const update = () => {
++    const karaoke = document.getElementById('tv-karaoke');
++    const tvOpen = !!(karaoke && !karaoke.classList.contains('hidden'));
++    setActive(document.body.classList.contains('np-open') || tvOpen);
++  };
++  const watch = (node) => {
++    if (!node) return;
++    new MutationObserver(update).observe(node, { attributes: true, attributeFilter: ['class'] });
++  };
++  watch(document.getElementById('right-panel'));
++  watch(document.getElementById('tv-karaoke'));
++  // np-open is set by another observer on the same panel, so this module cannot rely on seeing the
++  // panel's class first: also follow the body class directly
++  watch(document.body);
++  update();
++
++  let silentSince = 0;
++  Engine.prototype.getAnalyserNode = function () {
++    if (!wanted) return null;
++    return build() || stubAnalyser;
++  };
++  Engine.prototype.getFrequencyData = function (buffer) {
++    if (!wanted || !buffer) return;
++    const node = build();
++    if (node && typeof node.getByteFrequencyData === 'function') node.getByteFrequencyData(buffer);
++    else buffer.fill(0);
++    let peak = 0;
++    for (let i = 0; i < buffer.length; i++) { if (buffer[i] > peak) peak = buffer[i]; }
++    const a = mainAudio();
++    if (peak > 0 || !a || a.paused) { silentSince = 0; return; }
++    // Playing, but the analyser returns nothing: iOS refused the mirror, or the graph has not started
++    // yet. Draw a gentle synthetic spectrum so the bars are visible instead of a flat line.
++    const now = Date.now();
++    if (!silentSince) silentSince = now;
++    if (now - silentSince < 900) return;
++    const t = now / 1000;
++    for (let i = 0; i < buffer.length; i++) {
++      const f = i / buffer.length;
++      const env = Math.exp(-f * 2.4);
++      const w = Math.sin(t * 2.1 + i * 0.55) * 0.5 + Math.sin(t * 3.7 - i * 0.31) * 0.3 + Math.sin(t * 1.3 + i * 0.93) * 0.2;
++      buffer[i] = Math.max(0, Math.min(255, (0.45 + 0.4 * w) * 210 * env));
++    }
++  };
++  } catch (e) {}
++})();
++
+ (() => {
+   const panel = document.getElementById('right-panel');
+   const playbar = document.getElementById('playbar');
+@@ -30,7 +288,22 @@
+   new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['class'] });
+   sync();
+ 
+-  const openSheet = () => { if (panel.classList.contains('hidden')) lyricsBtn.click(); };
++  // swipe down on the sheet's header to close it
++  let startY = null;
++  let dragY = 0;
++  let dragRaf = 0;
++  // NOT `is-dragging`: that reorder-row class sets pointer-events: none !important, and a cancelled
++  // touch used to leave it on the panel, which made the whole sheet (X, tabs, lyrics, buttons) dead
++  const DRAG_CLASS = 'np-dragging';
++  const resetDrag = () => {
++    startY = null;
++    dragY = 0;
++    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
++    panel.classList.remove(DRAG_CLASS, 'is-dragging');
++    panel.style.transform = '';
++  };
++
++  const openSheet = () => { resetDrag(); if (panel.classList.contains('hidden')) lyricsBtn.click(); };
+   const closeSheet = () => { if (!panel.classList.contains('hidden')) document.getElementById('btn-close-right-panel').click(); };
+ 
+   // tapping the mini player (but not its buttons) opens the sheet
+@@ -40,32 +313,33 @@
+     openSheet();
+   });
+ 
+-  // swipe down on the sheet's top area to close it
+-  let startY = null;
+   panel.addEventListener('touchstart', (e) => {
+     const t = e.touches[0];
++    if (!t) return;
+     const lyrics = document.getElementById('lyrics-container');
+-    // a finger on a seek bar or slider is seeking, not closing the sheet (#21)
+-    if (e.target.closest('input[type="range"], .scrubber-track-container, [role="slider"]')) { startY = null; return; }
++    resetDrag();
++    // a finger on a seek bar or slider is seeking, not closing the sheet (#21); a finger in the queue
++    // or another scrolling list is scrolling it, and must not drag or close the sheet either
++    if (e.target.closest('input[type="range"], .scrubber-track-container, [role="slider"], #drawer-queue, .tracks-list')) return;
+     startY = (lyrics && lyrics.contains(e.target) && lyrics.scrollTop > 0) ? null : t.clientY;
+   }, { passive: true });
+   // one transform write per frame, and no CSS transition while the finger drags (it lagged behind)
+-  let dragY = 0, dragRaf = 0;
+   panel.addEventListener('touchmove', (e) => {
+-    if (startY === null) return;
++    if (startY === null || !e.touches[0]) return;
+     dragY = Math.max(0, e.touches[0].clientY - startY);
+-    if (dragY > 0 && !panel.classList.contains('is-dragging')) panel.classList.add('is-dragging');
++    if (dragY > 0 && !panel.classList.contains(DRAG_CLASS)) panel.classList.add(DRAG_CLASS);
+     if (!dragRaf) dragRaf = requestAnimationFrame(() => { dragRaf = 0; if (startY !== null) panel.style.transform = dragY > 0 ? `translateY(${dragY}px)` : ''; });
+   }, { passive: true });
+   panel.addEventListener('touchend', (e) => {
+     if (startY === null) return;
+-    const dy = e.changedTouches[0].clientY - startY;
+-    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = 0; }
+-    panel.classList.remove('is-dragging');
+-    panel.style.transform = '';
+-    startY = null;
++    const end = e.changedTouches && e.changedTouches[0];
++    const dy = end ? end.clientY - startY : 0;
++    resetDrag();
+     if (dy > 110) closeSheet();
+   });
++  // iOS cancels the touch stream when a system gesture takes over; without this the transform and the
++  // class used to stay behind
++  panel.addEventListener('touchcancel', resetDrag);
+ 
+   // Picked images and videos (background, banner, song covers) are saved as file URLs, and those change when
+   // iOS moves the app container (every update or reinstall). Rebuild each saved one from its file name, then
+diff --git a/mobile/mobile.css b/mobile/mobile.css
+index 55aebca..5916dc7 100644
+--- a/mobile/mobile.css
++++ b/mobile/mobile.css
+@@ -199,7 +199,6 @@ html.is-mobile body.np-open .playback-controls { justify-content: space-between
+ html.is-mobile body.np-open .btn-play-pause { width: 64px !important; height: 64px !important; }
+ html.is-mobile body.np-open .playbar-right { display: flex !important; justify-content: space-around !important; width: 100% !important; }
+ html.is-mobile body.np-open .volume-control-group,
+-html.is-mobile body.np-open .visualizer-container,
+ html.is-mobile body.np-open #btn-toggle-lyrics-panel { display: none !important; }
+ 
+ /* ---------- views, settings and dialogs at phone width ---------- */
+@@ -479,7 +478,19 @@ html.is-mobile .home-pane-label { min-width: 0; padding: 6px 4px; white-space: n
+ html.is-mobile .np-ambient i { animation: none !important; will-change: auto; }
+ html.is-mobile :is(.bg-mesh-layer, #mesh-gradient, .shape-pill, .shape-egg, .shape-triangle, .cover-container.spinning, .logo-star path, #sleep-timer-status.active::before) { animation: none !important; }
+ html.is-mobile *, html.is-mobile *::before, html.is-mobile *::after { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+-html.is-mobile #visualizer-container, html.is-mobile #mini-visualizer { display: none !important; }
++html.is-mobile #mini-visualizer { display: none !important; }
++/* the silent mirror element (mobile-ui.js) gives the analyser real data, so the compact visualizer can
++   sit in the now-playing sheet's player bar. It is the only visualizer the phone layout has room for,
++   and only the sheet draws it: the mini player has no space. */
++html.is-mobile body.np-open #visualizer-container {
++  display: flex !important;
++  align-items: center;
++  justify-content: center;
++  width: 60px;
++  height: 24px;
++  flex: 0 0 auto;
++}
++html.is-mobile body.np-open.bar-viz-behind #visualizer-container { display: flex !important; }
+ 
+ /* Riff 42.3 gave the Now Playing header min-height:0, so in the sheet's column it shrank to a few px and the
+    lyrics tools (edit / sync / translate / fullscreen / Word) got clipped under the tabs */
+@@ -526,7 +537,24 @@ html.is-mobile .playlist-actions {
+   width: 100%;
+ }
+ html.is-mobile .playlist-actions .pill-select { max-width: 100%; }
+-html.is-mobile #view-favorites .view-header { margin-bottom: 12px; flex-wrap: wrap; }
++/* the row is icon-only on a phone so the six actions fit on one line */
++html.is-mobile .playlist-actions > button:not(.hidden) {
++  width: 40px !important;
++  height: 40px !important;
++  min-width: 40px !important;
++  padding: 0;
++  border-radius: 50%;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++}
++html.is-mobile .playlist-actions #btn-shuffle-playlist span { display: none; }
++html.is-mobile #view-favorites .fav-toolbar {
++  gap: 8px;
++  padding: 6px;
++  margin: -4px -6px 10px;
++}
++html.is-mobile #view-favorites .fav-toolbar .sort-dropdown .m3-dropdown-trigger { padding: 8px 10px; }
+ 
+ /* hold a song for its menu: no iOS text-selection loupe or link callout, and a small lift as feedback */
+ html.is-mobile .track-row { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+@@ -592,7 +620,60 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
+ html.is-mobile .tvk-row:has(#btn-tvk-viz-connected) { display: none !important; }
+ html.is-mobile .tvk-liquid-layer { animation: none !important; }
+ html.is-mobile .nav-home-app-icon { width: 28px; height: 28px; border-radius: 8px; }
+-html.is-mobile .tvk-progress-row { width: min(86vw, 360px); }
++/* notched phones: the karaoke page is full-screen, so keep the cover/controls below the status bar
++   and put the seek bar at the bottom, out of the way of the artwork */
++html.is-mobile .tv-karaoke-layout {
++  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 8px);
++}
++html.is-mobile .tv-karaoke.tv-nolyrics .tv-karaoke-layout {
++  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 8px) !important;
++}
++html.is-mobile .tv-karaoke-close {
++  top: calc(var(--safe-top) + 10px);
++  right: 16px;
++}
++html.is-mobile .tvk-panel {
++  top: calc(var(--safe-top) + 16px);
++  right: 16px;
++}
++html.is-mobile .tvk-progress-row {
++  position: absolute;
++  left: 50%;
++  bottom: calc(var(--safe-bottom) + 10px);
++  transform: translateX(-50%);
++  width: min(86vw, 360px);
++  margin-top: 0;
++  z-index: 8;
++}
++html.is-mobile .tvk-progress-row .time-label { font-size: 11px; width: 34px; }
++/* the wave sits above the bottom seek row instead of behind it */
++html.is-mobile .tvk-visualizer { bottom: calc(var(--safe-bottom) + 52px); }
++/* with lyrics the wave becomes an edge-to-edge band that hugs the seek row, instead of a centred
++   band floating in the middle of the lyrics */
++html.is-mobile .tv-karaoke:not(.tv-nolyrics).tvk-show-lyrics-visualizer .tvk-visualizer {
++  bottom: calc(var(--safe-bottom) + 44px);
++}
++html.is-mobile .tvk-seek-slider,
++html.is-mobile #tvk-seek-slider {
++  touch-action: none;
++}
++/* the sheet's lyrics scroll only up and down; a long word used to widen the container and let the
++   whole text block drift sideways under the finger */
++html.is-mobile .lyrics-container,
++html.is-mobile .lyrics-section,
++html.is-mobile #right-panel { overflow-x: hidden !important; }
++html.is-mobile .lyrics-container { touch-action: pan-y !important; }
++html.is-mobile .lyrics-container .lyric-line { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
++
++/* ---------- queue pane ---------- */
++/* the negative margin on the list made the pane wider than the screen, so it scrolled sideways */
++html.is-mobile #drawer-queue { overflow-x: hidden !important; }
++html.is-mobile #drawer-queue .tracks-list { margin: 0 !important; }
++html.is-mobile .drawer-pane { min-width: 0 !important; max-width: 100% !important; }
++/* a drag offset or stale drag class must never leave the sheet untappable */
++html.is-mobile #right-panel.is-dragging,
++html.is-mobile #right-panel.np-dragging { pointer-events: auto !important; }
++html.is-mobile #right-panel.np-dragging { transition: none !important; }
+ html.is-mobile .cc-handle { width: 24px; }
+ html.is-mobile .cc-handle-left { left: -12px; }
+ html.is-mobile .cc-handle-right { right: -12px; }
+diff --git a/styles.css b/styles.css
+index 7f97d28..dccb0b8 100644
+--- a/styles.css
++++ b/styles.css
+@@ -1376,6 +1376,34 @@ body.perf .my-wave-ambient-light {
+   padding-bottom: 0;
+ }
+ 
++/* Favorites: search + sort + overflow in one sticky bar. app.js hides it on scroll down and brings it back on
++   scroll up, so the list gets the whole screen while the controls stay one short swipe away. */
++#view-favorites .fav-toolbar {
++  position: sticky;
++  top: 0;
++  z-index: 25;
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 8px;
++  margin: -8px -8px 12px;
++  border-radius: 18px;
++  background: var(--md-sys-color-surface-container-low);
++  transition: transform 240ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease;
++}
++#view-favorites .fav-toolbar .view-search-box {
++  flex: 1 1 auto;
++  min-width: 0;
++  margin: 0;
++}
++#view-favorites .fav-toolbar .sort-dropdown { flex: none; }
++#view-favorites .fav-toolbar .sort-dropdown .m3-dropdown-trigger { max-width: min(46vw, 210px); }
++#view-favorites .fav-toolbar.fav-toolbar-hidden {
++  transform: translateY(calc(-100% - 12px));
++  opacity: 0;
++  pointer-events: none;
++}
++
+ .search-artist-card {
+   display: flex;
+   align-items: center;
+@@ -2350,6 +2378,16 @@ body.no-page-glow .artist-hero { background: var(--md-sys-color-surface-containe
+ .track-context-item.danger {
+   color: var(--md-sys-color-error);
+ }
++.action-menu-sep {
++  height: 1px;
++  margin: 6px 10px;
++  background: var(--md-sys-color-outline-variant);
++  opacity: 0.6;
++}
++.action-menu .track-context-item.checked {
++  color: var(--md-sys-color-primary);
++  font-weight: 600;
++}
+ 
+ .playbar {
+   position: fixed;
+@@ -4572,6 +4610,18 @@ button:active svg, button:active img, button:active i, .btn-icon-pill:active svg
+   flex: 1 !important;
+   min-width: 0 !important;
+ }
++#playlist-detail-title.playlist-title-editable {
++  cursor: text;
++  border-radius: 10px;
++  transition: background-color 160ms ease;
++}
++#playlist-detail-title.playlist-title-editable:hover {
++  background: rgba(255, 255, 255, 0.07);
++}
++#playlist-detail-title.playlist-title-editable:focus-visible {
++  outline: 2px solid var(--md-sys-color-primary);
++  outline-offset: 3px;
++}
+ 
+ .playlist-type-badge {
+   font-size: calc(11px * var(--font-scale, 1));
+@@ -6606,10 +6656,11 @@ body.mini.mini-lyrics-on #btn-mini-lyrics {
+ .favorites-view {
+   box-sizing: border-box !important;
+ }
+-#view-playlist-detail,
+-#view-favorites {
++#view-playlist-detail {
+   overflow-x: hidden;
+ }
++/* Favorites must not clip on an intermediate element: an overflow ancestor turns the sticky search bar into a
++   non-sticky child of that box. .main-content already clips horizontal overflow for the whole page. */
+ 
+ .keycap { position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; padding: 0 12px 4px; box-sizing: border-box; border-radius: 9px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface-container-lowest)); color: var(--md-sys-color-on-surface); font: 600 13px/1 var(--font-family, inherit); letter-spacing: .02em; user-select: none; }
+ .keycap::before { content: ''; position: absolute; z-index: -1; inset: 2px 2px 6px 2px; border-radius: 7px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, var(--md-sys-color-surface-container-high)); border-top: 1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 22%, transparent); transition: inset .08s ease; }
+@@ -6770,7 +6821,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
+ .sl-active, .sl-inactive { position: absolute; top: 6px; height: 16px; pointer-events: none; transition: background-color 0.2s ease; }
+ .sl-active { left: 0; width: max(0px, calc((100% - 6px) * var(--v) + 3px - 8px)); background: var(--md-sys-color-primary); border-radius: 8px 3px 3px 8px; }
+ .sl-inactive { right: 0; width: max(0px, calc(100% - ((100% - 6px) * var(--v) + 3px) - 8px)); background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, transparent); border-radius: 3px 8px 8px 3px; }
+-.sl input[type="range"] { position: absolute; inset: 0; width: 100%; height: 28px; margin: 0; padding: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; z-index: 2; }
++.sl input[type="range"] { position: absolute; inset: 0; width: 100%; height: 28px; margin: 0; padding: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; z-index: 2; touch-action: none; }
+ .sl input[type="range"]::-webkit-slider-runnable-track { height: 28px; background: transparent; }
+ .sl input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 6px; height: 28px; border-radius: 3px; background: var(--md-sys-color-primary); border: none; box-shadow: none; transform: none; transition: width 0.15s ease; }
+ .sl input[type="range"]:active::-webkit-slider-thumb { width: 4px; transform: none; }
+@@ -7465,6 +7516,7 @@ body.no-clip-fx .sidebar { background: color-mix(in srgb, var(--md-sys-color-sur
+   display: flex;
+   gap: 16px;
+   overflow-x: auto;
++  overflow-y: hidden;
+   scrollbar-width: none;
+   scroll-behavior: smooth;
+   overscroll-behavior-x: contain;
+@@ -8379,8 +8431,10 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+ 
+ /* ---- For you (recommendations) ---- */
+ .fy-section { animation: m3FadeUp 350ms cubic-bezier(0.2, 0, 0, 1) both; }
+-.fy-genres { flex-wrap: wrap; }
+-.fy-row { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; scroll-snap-type: x proximity; }
++.fy-genres { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-snap-type: x proximity; padding-bottom: 2px; }
++.fy-genres::-webkit-scrollbar { display: none; }
++.fy-genres .chip-btn { flex: 0 0 auto; scroll-snap-align: start; }
++.fy-row { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scrollbar-width: none; scroll-snap-type: x proximity; }
+ .fy-row::-webkit-scrollbar { display: none; }
+ .fy-card, .fy-artist {
+   flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; text-align: left;
+@@ -8535,6 +8589,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+   .volume-range::-webkit-slider-runnable-track, .wavy-track { background: rgba(255, 255, 255, .3); stroke: rgba(255, 255, 255, .3); }
+   .cache-progress-track, .update-progress, .sl-inactive { background: rgba(255, 255, 255, .16); }
+   .settings-nav-btn:hover, .sp-modes button:hover:not(.active), .tvk-pill-btn:hover { background: rgba(255, 255, 255, .08); }
++  /* the word-by-word gradient fill gets its "unsung" half from a color-mix() fallback; without it the
++     background-image is invalid and the transparent text leaves Word lyrics completely blank */
++  .lyric-line.gradient-line .lyric-fill { --lyric-unsung: var(--md-sys-color-outline); }
+ }
+ 
+ /* Settings → Sync (sync.js) */
+@@ -8625,7 +8682,7 @@ body.mini .profile-switch { display: none; }
+ .sync-invite-text b { font-size: calc(16px * var(--font-scale, 1)); }
+ .sync-invite-text span { font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); line-height: 1.45; }
+ #section-home-playlists { padding-top: 6px; }
+-.home-pl-row { display: flex; gap: 14px; overflow-x: auto; padding: 2px 2px 10px; scroll-snap-type: x proximity; scrollbar-width: none; }
++.home-pl-row { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding: 2px 2px 10px; scroll-snap-type: x proximity; scrollbar-width: none; }
+ .home-pl-row::-webkit-scrollbar { display: none; }
+ .home-pl-card { flex: none; width: 150px; display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
+ .home-pl-cover { width: 150px; height: 150px; border-radius: 18px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--md-sys-color-surface-container-high); margin-bottom: 4px; transition: transform .2s cubic-bezier(.2, 0, 0, 1); }
+@@ -8730,7 +8787,7 @@ body:not(.home-spotify) #sp-home { display: none; }
+ .sp-tile-title { font-weight: 600; font-size: calc(14px * var(--font-scale, 1)); }
+ .sp-tile-sub { font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); }
+ .sp-fade { display: block; white-space: nowrap; overflow: hidden; text-overflow: clip; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+-.sp-row { display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 16px; overflow-x: auto; scrollbar-width: none; scroll-behavior: smooth; overscroll-behavior-x: contain; padding-bottom: 4px; }
++.sp-row { display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 16px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-behavior: smooth; overscroll-behavior-x: contain; padding: 2px 0 4px; }
+ .sp-row::-webkit-scrollbar { display: none; }
+ .sp-row.fade-left { -webkit-mask-image: linear-gradient(to right, transparent 0, #000 36px); mask-image: linear-gradient(to right, transparent 0, #000 36px); }
+ .sp-row.fade-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent 100%); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent 100%); }
