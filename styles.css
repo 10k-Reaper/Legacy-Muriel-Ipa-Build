@@ -1535,6 +1535,67 @@ body.perf .my-wave-ambient-light {
   flex-shrink: 0;
   background: var(--md-sys-color-surface-container-high);
 }
+/* Placeholder song rows. A fast fling can outrun the virtual list's next frame; these keep the list looking
+   like a list instead of empty space until the real rows (and their covers) arrive. */
+.ghost-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 64px;
+  padding: 10px 18px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.ghost-thumb {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--md-sys-color-surface-container-high);
+  animation: ghostPulse 1.3s ease-in-out infinite;
+}
+.ghost-lines {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ghost-line {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--md-sys-color-surface-container-high);
+  animation: ghostPulse 1.3s ease-in-out infinite;
+}
+.ghost-line-title {
+  height: 11px;
+}
+.ghost-line-sub {
+  height: 9px;
+  animation-delay: 110ms;
+}
+@keyframes ghostPulse {
+  0%, 100% { opacity: 0.38; }
+  50% { opacity: 0.72; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ghost-thumb,
+  .ghost-line {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+/* the drawer queue uses tighter rows, so its ghosts follow the same proportions */
+#drawer-queue .ghost-row {
+  height: 56px;
+  padding: 8px 10px;
+  gap: 12px;
+}
+#drawer-queue .ghost-thumb {
+  width: 40px;
+  height: 40px;
+}
 .track-row-info {
   display: flex;
   flex-direction: column;

@@ -8278,6 +8278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // a fresh list (new data, sort or filter) may reuse nothing: every row belongs to the previous track array
     container._rowPool = new Map();
+    container._ghostRange = null;
 
     if (!tracks || tracks.length === 0) {
       container.innerHTML = '';
@@ -8296,9 +8297,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const itemHeight = 64;
     const overscan = 15;
-    
-    function renderChunk() {
-      if (!scrollParent || container._isDraggingReorder) return;
+
+    function viewportRange() {
       const parentRect = scrollParent.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
       const relativeTop = containerRect.top - parentRect.top + scrollParent.scrollTop;
@@ -8312,8 +8312,42 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       startIndex = Math.max(0, startIndex);
       endIndex = Math.min(tracks.length, endIndex);
+      return { startIndex, endIndex };
+    }
+
+    // A fast fling can outrun the next animation frame. Rather than let the viewport show the list's empty
+    // spacer, fill the gap with song-shaped ghost rows until renderChunk installs the real ones.
+    function createGhostRow(idx) {
+      const row = document.createElement('div');
+      row.className = 'ghost-row';
+      row.setAttribute('aria-hidden', 'true');
+      row.innerHTML = '<span class="ghost-thumb"></span><span class="ghost-lines"><span class="ghost-line ghost-line-title"></span><span class="ghost-line ghost-line-sub"></span></span>';
+      const widths = [60, 76, 48, 70, 55, 82, 62, 45];
+      const title = row.querySelector('.ghost-line-title');
+      if (title) title.style.width = `${widths[idx % widths.length]}%`;
+      const sub = row.querySelector('.ghost-line-sub');
+      if (sub) sub.style.width = `${Math.max(24, widths[(idx + 3) % widths.length] - 26)}%`;
+      return row;
+    }
+
+    function renderGhosts(startIndex, endIndex) {
+      if (!scrollParent || container._isDraggingReorder) return;
+      const current = container._ghostRange;
+      if (current && startIndex >= current.start && endIndex <= current.end) return;
+      const fragment = document.createDocumentFragment();
+      for (let idx = startIndex; idx < endIndex; idx++) fragment.appendChild(createGhostRow(idx));
+      container.style.paddingTop = `${startIndex * itemHeight}px`;
+      container.style.paddingBottom = `${(tracks.length - endIndex) * itemHeight}px`;
+      if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
+      else { container.innerHTML = ''; container.appendChild(fragment); }
+      container._ghostRange = { start: startIndex, end: endIndex };
+    }
+
+    function renderChunk() {
+      if (!scrollParent || container._isDraggingReorder) return;
+      const { startIndex, endIndex } = viewportRange();
       
-      if (container._lastStartIndex === startIndex && container._lastEndIndex === endIndex) return;
+      if (!container._ghostRange && container._lastStartIndex === startIndex && container._lastEndIndex === endIndex) return;
       container._lastStartIndex = startIndex;
       container._lastEndIndex = endIndex;
       
@@ -8350,11 +8384,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       // replaceChildren removes the rows that scrolled away and installs the reused ones in one paint
       if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
       else { container.innerHTML = ''; container.appendChild(fragment); }
+      container._ghostRange = null;
       container._hasInitialRendered = true;
       highlightPlayingRow();
     }
     
     container._vScrollHandler = () => {
+      // the next frame may be a whole fling away: put ghost rows over the gap in this same scroll event
+      if (scrollParent && !container._isDraggingReorder) {
+        const { startIndex, endIndex } = viewportRange();
+        const covered = container._lastStartIndex >= 0
+          && startIndex >= container._lastStartIndex
+          && endIndex <= container._lastEndIndex;
+        if (!covered) renderGhosts(startIndex, endIndex);
+      }
       if (!container._ticking) {
         window.requestAnimationFrame(() => {
           renderChunk();

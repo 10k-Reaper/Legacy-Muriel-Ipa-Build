@@ -251,3 +251,18 @@ add favorites. Both are fixed in the same cumulative patch 9:
 `node --check app.js`, `node --check mobile/mobile-ui.js`, `node mobile/build.mjs`
 and `npm run check:ios15` pass with the same four expected warnings. This pass
 also needs a fresh macOS build and an iPhone check before the merge.
+
+## Eighth iPhone pass (patch 9, cumulative)
+
+Fast flings could still outrun the virtual list and leave the viewport looking
+empty. This pass fills that gap:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Flicking quickly through Favorites, the Queue, Now Playing's queue, playlists or any other track list showed blank space until the next frame. | Rows and padding were only updated in `requestAnimationFrame`. A fling can move further than the rendered overscan between frames, so the viewport reached the empty spacer before the next render. | The scroll handler now renders song-shaped ghost rows synchronously whenever the new viewport range is not covered by the last render. They use the Muriel surface palette (cover circle, title/artist bars, soft pulse) and are replaced by the real rows on the next frame. Normal scrolling never shows them; they only fill the gap a fast fling creates. |
+
+The README is now the fork's own iOS 15 README rather than upstream Muriel's;
+patch 7 carries it so a future upstream sync keeps the correct GitHub page.
+
+`node --check app.js`, `node --check mobile/mobile-ui.js`, `node mobile/build.mjs`
+and `npm run check:ios15` pass with the same four expected warnings.

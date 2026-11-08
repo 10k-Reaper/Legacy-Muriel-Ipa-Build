@@ -1,5 +1,5 @@
 diff --git a/app.js b/app.js
-index 69d5c18..b6f9c26 100644
+index 69d5c18..9b229ab 100644
 --- a/app.js
 +++ b/app.js
 @@ -23,6 +23,32 @@
@@ -256,7 +256,7 @@ index 69d5c18..b6f9c26 100644
    function renderTracks(container, tracks, context = 'search') {
      if (!container) return;
      
-@@ -8142,9 +8276,11 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -8142,9 +8276,12 @@ document.addEventListener('DOMContentLoaded', async () => {
        scrollParent.removeEventListener('scroll', container._vScrollHandler);
      }
      
@@ -264,13 +264,67 @@ index 69d5c18..b6f9c26 100644
 -    
 +    // a fresh list (new data, sort or filter) may reuse nothing: every row belongs to the previous track array
 +    container._rowPool = new Map();
++    container._ghostRange = null;
 +
      if (!tracks || tracks.length === 0) {
 +      container.innerHTML = '';
        container.style.paddingTop = '0px';
        container.style.paddingBottom = '0px';
        const emptyMessages = {
-@@ -8182,18 +8318,38 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -8160,9 +8297,8 @@ document.addEventListener('DOMContentLoaded', async () => {
+ 
+     const itemHeight = 64;
+     const overscan = 15;
+-    
+-    function renderChunk() {
+-      if (!scrollParent || container._isDraggingReorder) return;
++
++    function viewportRange() {
+       const parentRect = scrollParent.getBoundingClientRect();
+       const containerRect = container.getBoundingClientRect();
+       const relativeTop = containerRect.top - parentRect.top + scrollParent.scrollTop;
+@@ -8176,29 +8312,92 @@ document.addEventListener('DOMContentLoaded', async () => {
+       
+       startIndex = Math.max(0, startIndex);
+       endIndex = Math.min(tracks.length, endIndex);
++      return { startIndex, endIndex };
++    }
++
++    // A fast fling can outrun the next animation frame. Rather than let the viewport show the list's empty
++    // spacer, fill the gap with song-shaped ghost rows until renderChunk installs the real ones.
++    function createGhostRow(idx) {
++      const row = document.createElement('div');
++      row.className = 'ghost-row';
++      row.setAttribute('aria-hidden', 'true');
++      row.innerHTML = '<span class="ghost-thumb"></span><span class="ghost-lines"><span class="ghost-line ghost-line-title"></span><span class="ghost-line ghost-line-sub"></span></span>';
++      const widths = [60, 76, 48, 70, 55, 82, 62, 45];
++      const title = row.querySelector('.ghost-line-title');
++      if (title) title.style.width = `${widths[idx % widths.length]}%`;
++      const sub = row.querySelector('.ghost-line-sub');
++      if (sub) sub.style.width = `${Math.max(24, widths[(idx + 3) % widths.length] - 26)}%`;
++      return row;
++    }
++
++    function renderGhosts(startIndex, endIndex) {
++      if (!scrollParent || container._isDraggingReorder) return;
++      const current = container._ghostRange;
++      if (current && startIndex >= current.start && endIndex <= current.end) return;
++      const fragment = document.createDocumentFragment();
++      for (let idx = startIndex; idx < endIndex; idx++) fragment.appendChild(createGhostRow(idx));
++      container.style.paddingTop = `${startIndex * itemHeight}px`;
++      container.style.paddingBottom = `${(tracks.length - endIndex) * itemHeight}px`;
++      if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
++      else { container.innerHTML = ''; container.appendChild(fragment); }
++      container._ghostRange = { start: startIndex, end: endIndex };
++    }
++
++    function renderChunk() {
++      if (!scrollParent || container._isDraggingReorder) return;
++      const { startIndex, endIndex } = viewportRange();
+       
+-      if (container._lastStartIndex === startIndex && container._lastEndIndex === endIndex) return;
++      if (!container._ghostRange && container._lastStartIndex === startIndex && container._lastEndIndex === endIndex) return;
+       container._lastStartIndex = startIndex;
        container._lastEndIndex = endIndex;
        
        const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
@@ -313,10 +367,24 @@ index 69d5c18..b6f9c26 100644
 +      // replaceChildren removes the rows that scrolled away and installs the reused ones in one paint
 +      if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
 +      else { container.innerHTML = ''; container.appendChild(fragment); }
++      container._ghostRange = null;
        container._hasInitialRendered = true;
        highlightPlayingRow();
      }
-@@ -8715,6 +8871,51 @@ document.addEventListener('DOMContentLoaded', async () => {
+     
+     container._vScrollHandler = () => {
++      // the next frame may be a whole fling away: put ghost rows over the gap in this same scroll event
++      if (scrollParent && !container._isDraggingReorder) {
++        const { startIndex, endIndex } = viewportRange();
++        const covered = container._lastStartIndex >= 0
++          && startIndex >= container._lastStartIndex
++          && endIndex <= container._lastEndIndex;
++        if (!covered) renderGhosts(startIndex, endIndex);
++      }
+       if (!container._ticking) {
+         window.requestAnimationFrame(() => {
+           renderChunk();
+@@ -8715,6 +8914,51 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.favoritesSearchInput.addEventListener('input', () => renderFavoritesView());
    }
  
@@ -368,7 +436,7 @@ index 69d5c18..b6f9c26 100644
    // Sort menus of Favorites and playlists: a Material dropdown in front of the <select> (still the value), with
    // the select's options, so the list of orders stays in one place (track-sort.js does the sorting)
    // (var: a view can render before this line has run)
-@@ -9402,9 +9603,10 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -9402,9 +9646,10 @@ document.addEventListener('DOMContentLoaded', async () => {
      };
  
      const onPointerUp = (e) => {
@@ -381,7 +449,7 @@ index 69d5c18..b6f9c26 100644
        clearTimeout(pressTimer);
        clearInterval(autoScrollTimer);
        window.removeEventListener('pointermove', onPointerMove);
-@@ -9486,8 +9688,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -9486,8 +9731,22 @@ document.addEventListener('DOMContentLoaded', async () => {
      };
  
      container.addEventListener('pointerdown', onPointerDown);
@@ -406,7 +474,7 @@ index 69d5c18..b6f9c26 100644
    }
  
    initListReordering({
-@@ -9576,6 +9792,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -9576,6 +9835,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (el.playlistSort) { el.playlistSort.value = getTrackSortMode('playlist'); syncSortDropdown('playlist'); }
      renderPlaylistDescription(pl);
      renderPlaylistDuplicateButton(pl);
@@ -414,7 +482,7 @@ index 69d5c18..b6f9c26 100644
      const totalSec = (pl.tracks || []).reduce((acc, t) => acc + (t.duration || 0), 0);
      const durStr = totalSec > 0 ? ` • ${formatDuration(totalSec)}` : '';
      if (el.playlistDetailCount) el.playlistDetailCount.textContent = (query ? `${filtered.length} of ${pl.tracks.length} tracks` : `${pl.tracks.length} tracks`) + durStr;
-@@ -9679,7 +9896,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -9679,7 +9939,14 @@ document.addEventListener('DOMContentLoaded', async () => {
      } catch (e) { window.prompt(T('Copy this link'), link); }
    }
    const btnSharePlaylist = document.getElementById('btn-share-playlist');
@@ -430,7 +498,7 @@ index 69d5c18..b6f9c26 100644
  
    // a playlist someone shared: from a muriel://playlist link, the search bar or the link importer
    let importingShare = '';
-@@ -9715,35 +9939,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -9715,35 +9982,97 @@ document.addEventListener('DOMContentLoaded', async () => {
    const btnShufflePlaylist = document.getElementById('btn-shuffle-playlist');
    if (btnShufflePlaylist) btnShufflePlaylist.addEventListener('click', () => playOpenPlaylist(true));
  
@@ -543,7 +611,7 @@ index 69d5c18..b6f9c26 100644
        const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
        if (!pl || titleEl.querySelector('input')) return;
        const input = document.createElement('input');
-@@ -9772,6 +10058,56 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -9772,6 +10101,56 @@ document.addEventListener('DOMContentLoaded', async () => {
          else if (e.key === 'Escape') finish(false);
        });
        input.addEventListener('blur', () => finish(true));
@@ -600,7 +668,7 @@ index 69d5c18..b6f9c26 100644
      });
    })();
  
-@@ -10771,14 +11107,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -10771,14 +11150,22 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
    }
  
@@ -628,7 +696,7 @@ index 69d5c18..b6f9c26 100644
    }
  
    syncVolumeControls();
-@@ -11373,8 +11717,31 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11373,8 +11760,31 @@ document.addEventListener('DOMContentLoaded', async () => {
      });
    }
  
@@ -660,7 +728,7 @@ index 69d5c18..b6f9c26 100644
        const val = parseInt(e.target.value, 10);
        if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
        document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
-@@ -11463,7 +11830,15 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11463,7 +11873,15 @@ document.addEventListener('DOMContentLoaded', async () => {
    }, 50);
  
    if (el.sliderCornerRadius) {
@@ -676,7 +744,7 @@ index 69d5c18..b6f9c26 100644
        const val = parseInt(e.target.value, 10);
        if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
        document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
-@@ -11473,7 +11848,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11473,7 +11891,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderUiAlpha) {
@@ -691,7 +759,7 @@ index 69d5c18..b6f9c26 100644
        const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
-@@ -11494,7 +11876,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11494,7 +11919,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderTextAlpha) {
@@ -706,7 +774,7 @@ index 69d5c18..b6f9c26 100644
        const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--text-alpha', `${val}%`);
-@@ -11740,7 +12129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11740,7 +12172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
@@ -715,7 +783,7 @@ index 69d5c18..b6f9c26 100644
    function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
    function onBackgroundChanged(kind, enabled) {
      if (!getAdv('ui_alpha_auto', true)) return;
-@@ -11820,11 +12209,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11820,11 +12252,24 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
      document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
  
@@ -741,7 +809,7 @@ index 69d5c18..b6f9c26 100644
      });
    }
  
-@@ -12317,6 +12719,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12317,6 +12762,97 @@ document.addEventListener('DOMContentLoaded', async () => {
      Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
      input.addEventListener('input', onChange);
    }
@@ -839,7 +907,7 @@ index 69d5c18..b6f9c26 100644
    function enhanceSliders(root) {
      (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
        if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
-@@ -12332,6 +12825,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12332,6 +12868,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
        };
        watchSliderValue(input, sync);
@@ -847,7 +915,7 @@ index 69d5c18..b6f9c26 100644
        sync();
      });
    }
-@@ -19503,7 +19997,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19503,7 +20040,9 @@ document.addEventListener('DOMContentLoaded', async () => {
    function renderPlaylistDuplicateButton(pl) {
      if (!el.btnDedupePlaylist || !pl) return;
      const duplicates = pl.tracks.length - dedupeTracks(pl.tracks, isSameTrack, getTrackCanonicalId).length;
@@ -858,7 +926,7 @@ index 69d5c18..b6f9c26 100644
      if (el.btnDedupePlaylistLabel) {
        el.btnDedupePlaylistLabel.textContent = duplicates === 1 ? 'Remove 1 duplicate' : `Remove ${duplicates} duplicates`;
      }
-@@ -19784,9 +20280,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19784,9 +20323,13 @@ document.addEventListener('DOMContentLoaded', async () => {
        const a = el.nativeAudio;
        return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
      };
@@ -873,7 +941,7 @@ index 69d5c18..b6f9c26 100644
        const t = (Number(slider.value) / 1000) * durNow();
        const curEl = document.getElementById('tvk-time-current');
        if (curEl) curEl.textContent = formatDuration(t);
-@@ -19799,8 +20299,12 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19799,8 +20342,12 @@ document.addEventListener('DOMContentLoaded', async () => {
          updateMediaPositionState();
        }
        tvkSeekDragging = false;
@@ -887,7 +955,7 @@ index 69d5c18..b6f9c26 100644
      // the slider must not start a lyrics drag or hide the controls
      slider.addEventListener('mousemove', (e) => e.stopPropagation());
    })();
-@@ -20613,6 +21117,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -20613,6 +21160,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      next: () => playNext(),
      prev: () => playPrev(),
      seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
@@ -1609,7 +1677,7 @@ index 55aebca..5916dc7 100644
  html.is-mobile .cc-handle-left { left: -12px; }
  html.is-mobile .cc-handle-right { right: -12px; }
 diff --git a/styles.css b/styles.css
-index 7f97d28..dccb0b8 100644
+index 7f97d28..ffaa87c 100644
 --- a/styles.css
 +++ b/styles.css
 @@ -1376,6 +1376,34 @@ body.perf .my-wave-ambient-light {
@@ -1647,7 +1715,75 @@ index 7f97d28..dccb0b8 100644
  .search-artist-card {
    display: flex;
    align-items: center;
-@@ -2350,6 +2378,16 @@ body.no-page-glow .artist-hero { background: var(--md-sys-color-surface-containe
+@@ -1507,6 +1535,67 @@ body.perf .my-wave-ambient-light {
+   flex-shrink: 0;
+   background: var(--md-sys-color-surface-container-high);
+ }
++/* Placeholder song rows. A fast fling can outrun the virtual list's next frame; these keep the list looking
++   like a list instead of empty space until the real rows (and their covers) arrive. */
++.ghost-row {
++  display: flex;
++  align-items: center;
++  gap: 16px;
++  height: 64px;
++  padding: 10px 18px;
++  box-sizing: border-box;
++  pointer-events: none;
++}
++.ghost-thumb {
++  flex: 0 0 auto;
++  width: 44px;
++  height: 44px;
++  border-radius: 50%;
++  background: var(--md-sys-color-surface-container-high);
++  animation: ghostPulse 1.3s ease-in-out infinite;
++}
++.ghost-lines {
++  flex: 1 1 auto;
++  min-width: 0;
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++}
++.ghost-line {
++  display: block;
++  height: 10px;
++  border-radius: 999px;
++  background: var(--md-sys-color-surface-container-high);
++  animation: ghostPulse 1.3s ease-in-out infinite;
++}
++.ghost-line-title {
++  height: 11px;
++}
++.ghost-line-sub {
++  height: 9px;
++  animation-delay: 110ms;
++}
++@keyframes ghostPulse {
++  0%, 100% { opacity: 0.38; }
++  50% { opacity: 0.72; }
++}
++@media (prefers-reduced-motion: reduce) {
++  .ghost-thumb,
++  .ghost-line {
++    animation: none;
++    opacity: 0.5;
++  }
++}
++/* the drawer queue uses tighter rows, so its ghosts follow the same proportions */
++#drawer-queue .ghost-row {
++  height: 56px;
++  padding: 8px 10px;
++  gap: 12px;
++}
++#drawer-queue .ghost-thumb {
++  width: 40px;
++  height: 40px;
++}
+ .track-row-info {
+   display: flex;
+   flex-direction: column;
+@@ -2350,6 +2439,16 @@ body.no-page-glow .artist-hero { background: var(--md-sys-color-surface-containe
  .track-context-item.danger {
    color: var(--md-sys-color-error);
  }
@@ -1664,7 +1800,7 @@ index 7f97d28..dccb0b8 100644
  
  .playbar {
    position: fixed;
-@@ -4572,6 +4610,18 @@ button:active svg, button:active img, button:active i, .btn-icon-pill:active svg
+@@ -4572,6 +4671,18 @@ button:active svg, button:active img, button:active i, .btn-icon-pill:active svg
    flex: 1 !important;
    min-width: 0 !important;
  }
@@ -1683,7 +1819,7 @@ index 7f97d28..dccb0b8 100644
  
  .playlist-type-badge {
    font-size: calc(11px * var(--font-scale, 1));
-@@ -6606,10 +6656,11 @@ body.mini.mini-lyrics-on #btn-mini-lyrics {
+@@ -6606,10 +6717,11 @@ body.mini.mini-lyrics-on #btn-mini-lyrics {
  .favorites-view {
    box-sizing: border-box !important;
  }
@@ -1697,7 +1833,7 @@ index 7f97d28..dccb0b8 100644
  
  .keycap { position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; padding: 0 12px 4px; box-sizing: border-box; border-radius: 9px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface-container-lowest)); color: var(--md-sys-color-on-surface); font: 600 13px/1 var(--font-family, inherit); letter-spacing: .02em; user-select: none; }
  .keycap::before { content: ''; position: absolute; z-index: -1; inset: 2px 2px 6px 2px; border-radius: 7px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, var(--md-sys-color-surface-container-high)); border-top: 1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 22%, transparent); transition: inset .08s ease; }
-@@ -6770,7 +6821,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
+@@ -6770,7 +6882,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
  .sl-active, .sl-inactive { position: absolute; top: 6px; height: 16px; pointer-events: none; transition: background-color 0.2s ease; }
  .sl-active { left: 0; width: max(0px, calc((100% - 6px) * var(--v) + 3px - 8px)); background: var(--md-sys-color-primary); border-radius: 8px 3px 3px 8px; }
  .sl-inactive { right: 0; width: max(0px, calc(100% - ((100% - 6px) * var(--v) + 3px) - 8px)); background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, transparent); border-radius: 3px 8px 8px 3px; }
@@ -1706,7 +1842,7 @@ index 7f97d28..dccb0b8 100644
  .sl input[type="range"]::-webkit-slider-runnable-track { height: 28px; background: transparent; }
  .sl input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 6px; height: 28px; border-radius: 3px; background: var(--md-sys-color-primary); border: none; box-shadow: none; transform: none; transition: width 0.15s ease; }
  .sl input[type="range"]:active::-webkit-slider-thumb { width: 4px; transform: none; }
-@@ -7465,6 +7516,7 @@ body.no-clip-fx .sidebar { background: color-mix(in srgb, var(--md-sys-color-sur
+@@ -7465,6 +7577,7 @@ body.no-clip-fx .sidebar { background: color-mix(in srgb, var(--md-sys-color-sur
    display: flex;
    gap: 16px;
    overflow-x: auto;
@@ -1714,7 +1850,7 @@ index 7f97d28..dccb0b8 100644
    scrollbar-width: none;
    scroll-behavior: smooth;
    overscroll-behavior-x: contain;
-@@ -8379,8 +8431,10 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+@@ -8379,8 +8492,10 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
  
  /* ---- For you (recommendations) ---- */
  .fy-section { animation: m3FadeUp 350ms cubic-bezier(0.2, 0, 0, 1) both; }
@@ -1727,7 +1863,7 @@ index 7f97d28..dccb0b8 100644
  .fy-row::-webkit-scrollbar { display: none; }
  .fy-card, .fy-artist {
    flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; text-align: left;
-@@ -8535,6 +8589,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+@@ -8535,6 +8650,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
    .volume-range::-webkit-slider-runnable-track, .wavy-track { background: rgba(255, 255, 255, .3); stroke: rgba(255, 255, 255, .3); }
    .cache-progress-track, .update-progress, .sl-inactive { background: rgba(255, 255, 255, .16); }
    .settings-nav-btn:hover, .sp-modes button:hover:not(.active), .tvk-pill-btn:hover { background: rgba(255, 255, 255, .08); }
@@ -1737,7 +1873,7 @@ index 7f97d28..dccb0b8 100644
  }
  
  /* Settings → Sync (sync.js) */
-@@ -8625,7 +8682,7 @@ body.mini .profile-switch { display: none; }
+@@ -8625,7 +8743,7 @@ body.mini .profile-switch { display: none; }
  .sync-invite-text b { font-size: calc(16px * var(--font-scale, 1)); }
  .sync-invite-text span { font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); line-height: 1.45; }
  #section-home-playlists { padding-top: 6px; }
@@ -1746,7 +1882,7 @@ index 7f97d28..dccb0b8 100644
  .home-pl-row::-webkit-scrollbar { display: none; }
  .home-pl-card { flex: none; width: 150px; display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
  .home-pl-cover { width: 150px; height: 150px; border-radius: 18px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--md-sys-color-surface-container-high); margin-bottom: 4px; transition: transform .2s cubic-bezier(.2, 0, 0, 1); }
-@@ -8730,7 +8787,7 @@ body:not(.home-spotify) #sp-home { display: none; }
+@@ -8730,7 +8848,7 @@ body:not(.home-spotify) #sp-home { display: none; }
  .sp-tile-title { font-weight: 600; font-size: calc(14px * var(--font-scale, 1)); }
  .sp-tile-sub { font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); }
  .sp-fade { display: block; white-space: nowrap; overflow: hidden; text-overflow: clip; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }

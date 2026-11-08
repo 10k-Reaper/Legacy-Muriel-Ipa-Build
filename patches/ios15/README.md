@@ -19,7 +19,8 @@ Apply with `git apply --3way` from the repository root, in this order:
    `tools/check-ios15-compat.mjs`.
 6. `0006-gate-ios-workflows.patch` — add the manual iOS 15 IPA workflow and gate
    the release workflow.
-7. `0007-document-ios15-port.patch` — add `LEGACY_IOS.md`.
+7. `0007-document-ios15-port.patch` — add `LEGACY_IOS.md` and replace the
+   upstream README with the fork's iOS 15 README.
 8. `0008-pin-patch-line-endings.patch` — add `.gitattributes` so the series
    stays LF-only on Windows.
 9. `0009-fix-karaoke-notch-volume-and-slider-drag.patch` — keep the fullscreen
@@ -48,7 +49,9 @@ Apply with `git apply --3way` from the repository root, in this order:
    a tap on the playlist name. This patch now includes `index.html`. The seventh
    device pass makes the virtualised lists reuse their row elements while
    scrolling (covers are no longer rebuilt and reloaded) and turns the playlist
-   "Like all" heart into an add/remove toggle with a confirmation dialog.
+   "Like all" heart into an add/remove toggle with a confirmation dialog. The
+   eighth device pass fills the gap left by a fast fling with Muriel-styled ghost
+   song rows until the real rows render.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:
