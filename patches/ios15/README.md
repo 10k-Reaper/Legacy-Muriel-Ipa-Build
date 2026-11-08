@@ -38,6 +38,14 @@ Apply with `git apply --3way` from the repository root, in this order:
    with-lyrics wave a full-width band at the bottom, stops the Queue scrolling
    sideways, and replaces the sheet's reuse of the reorder-row `is-dragging`
    class (which could leave the whole sheet untappable) with `np-dragging`.
+   The sixth device pass stops Queue/Favorites covers from replaying their fade
+   on every virtualised row rebuild, lets a touch scroll the Favorites list
+   instead of being captured by the reorder/menu long-press, turns the Favorites
+   header into a sticky auto-hiding toolbar (search, sort-arrow dropdown, `...`
+   menu for Select/Download all), and reduces the playlist header to Play,
+   Shuffle, Share (with Export JSON), icon-only Download all, Like all, a `...`
+   menu (Select, duplicates, manual/sort order) and Delete, with rename moved to
+   a tap on the playlist name. This patch now includes `index.html`.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:

@@ -139,7 +139,8 @@ Merge `sync/upstream-2df82f5` into `main` only after:
    `minos 15.0`.~~ Passed.
 3. ~~An iOS 15 device smoke test passes.~~ Passed on iPhone XR / iOS 15.4.1.
 4. The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in all
-   three patch-9 tables pass on the iPhone.
+   patch-9 tables pass on the iPhone, including the sixth pass (cover flashing,
+   Favorites scrolling/toolbar, and the reduced playlist header).
 5. `npm test` is re-run on a non-Windows environment (or the five failures are
    confirmed as pre-existing environment issues).
 
@@ -212,3 +213,20 @@ the same cumulative patch 9:
 | With lyrics on, the wave was a narrow centred band floating in the middle of the lyrics. | `resizeCanvases` capped the karaoke canvas at 64% of the window (minimum 360px), and the phone offset sat 52px above the bottom. | With lyrics on a phone the canvas is edge to edge and the wave sits just above the seek row. Tracks without lyrics keep their previous centred band and position. |
 | The Queue could be scrolled sideways. | `#drawer-queue` had `overflow-y: auto` (which computes `overflow-x: auto`) and its list used `margin: 0 -8px`, so it was 16px wider than the pane. | `overflow-x: hidden` on the queue pane, the negative margin removed, and the panes constrained to the sheet's width. |
 | After scrolling the Queue, the whole Now Playing sheet stopped taking taps: close, tabs, lyrics, hearts, rows. | The sheet's swipe-to-close reused the reorder-row class `is-dragging`, whose global rule sets `pointer-events: none !important`. A touch the browser cancelled left the class on the panel, so every child stopped receiving input. | The sheet now uses its own `np-dragging` class (no pointer-events change), resets on `touchcancel` and on every new touch (guarding an empty `changedTouches`), ignores drags that start in the Queue or another scrolling list, resets when the sheet opens, and a CSS safety rule re-enables pointer events if `is-dragging` is ever found on the panel. |
+
+## Sixth iPhone pass (patch 9, cumulative)
+
+This pass confirmed the karaoke settings, the full-width with-lyrics wave, the
+Queue's horizontal lock and the Now Playing sheet taps. Three last issues were
+fixed in the same cumulative patch 9 (which now also carries `index.html`):
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Queue covers (in the sheet and the main Queue) flashed heavily while scrolling, especially quickly. | The virtualised lists rebuild their rows on every scroll step, and every new `<img>` starts at `opacity: 0` and fades in when its `load` event fires, so a cover already on screen replayed the fade on every render. | `app.js` records covers that have loaded once and marks matching `track-row-thumb` images loaded as soon as their row is created. After a list's first paint, the container also gets `no-thumb-fade`, and `styles.css` forces those thumbs opaque with no transition. |
+| Favorites would only scroll when the finger started at the far right; elsewhere the list felt stuck. | The reorder long-press listened to `pointerdown`/`pointermove`. iOS can begin a scroll without delivering `pointermove`, so the hold timer fired, captured the row and swallowed the scroll. The separate hold-to-open song menu had the same problem. | The reorder code cancels the hold on `touchmove` once the finger travels 8px (and on `touchcancel`), and `onPointerUp` now only enforces a matching `pointerId` for real pointer events. The hold-menu cancels its timer from a capturing `touchmove` as well. |
+| Favorites header: visible Select / Download all / Sort buttons scrolled with the list, and the search field was not reachable while scrolling. | The controls were static children of the view, not a bar of their own. | The Favorites header is now a sticky `.fav-toolbar` with the search field, the dedicated sort-arrow dropdown (Manual order and the other modes) and a `...` overflow button. Select and Download all moved into that menu; the old buttons remain hidden in the DOM for their handlers. The bar slides away while scrolling down, comes back on the first upward scroll, stays open while the search field or sort menu is focused, and resets when the view is entered. `#view-favorites` no longer sets `overflow-x: hidden` (an overflow ancestor would defeat `position: sticky`); `.main-content` still clips the page. |
+| Playlist header carried ten controls: Play, Shuffle, Share, Sort/Manual order, Select, Download all, Like all, Rename, Export JSON, Delete. | Every action was a top-level button in one row. | The row is now Play, Shuffle, Share, an icon-only Download all, Like all, a `...` overflow menu and Delete. Share opens "Share playlist link" / "Export as JSON file". The `...` menu holds "Select tracks", the duplicate-cleanup entry (only when duplicates exist) and "Sort playlist: <mode>", which opens the full manual/sort list. Renaming starts by tapping the visible playlist name (the Rename button stays hidden in the DOM). The old Select, Download-label, Sort dropdown and Export buttons remain hidden so their existing bindings and `backup.js` keep working. On phones the row is icon-only at 40px so all six actions fit on one line. |
+
+`npm run check:ios15`, `node --check app.js`, `node --check mobile/mobile-ui.js`
+and `node mobile/build.mjs` pass with the same four expected warnings. This pass
+needs a fresh macOS build and an iPhone check before the merge.

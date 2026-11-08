@@ -2175,6 +2175,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       hold.moved = true;
       if (!hold.fired) end();
     };
+    // iOS can start a scroll without delivering pointermove, so the hold also watches touchmove: a moving
+    // finger is scrolling the list, never a hold for the song menu
+    const touchMove = (e) => {
+      if (!hold) return;
+      const t = e.touches && e.touches[0];
+      if (!t || Math.hypot(t.clientX - hold.x, t.clientY - hold.y) <= 8) return;
+      hold.moved = true;
+      end();
+    };
+    document.addEventListener('touchmove', touchMove, { passive: true, capture: true });
     const up = (e) => {
       if (!hold || e.pointerId !== hold.id) return;
       const h = hold; end();
@@ -3275,7 +3285,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const FADE_IMG_SEL = '.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img';
-  const markImgLoaded = (e) => { const t = e.target; if (t.tagName === 'IMG' && t.matches(FADE_IMG_SEL)) t.classList.add('is-loaded'); };
+  // The queue and the long lists rebuild their rows while scrolling. Every new <img> starts at opacity 0 and
+  // fades in on its load event, so a cover that was already on screen faded again on every re-render and the
+  // list flashed. Remember which covers have loaded once and start those rows visible.
+  const loadedImgSrcs = new Set();
+  const markImgLoaded = (e) => {
+    const t = e.target;
+    if (t.tagName !== 'IMG' || !t.matches(FADE_IMG_SEL)) return;
+    t.classList.add('is-loaded');
+    const src = t.currentSrc || t.src;
+    if (src) loadedImgSrcs.add(src);
+  };
+  const markCachedThumbsLoaded = (root) => {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('img.track-row-thumb').forEach((img) => {
+      const src = img.currentSrc || img.src;
+      if (img.complete || (src && loadedImgSrcs.has(src))) img.classList.add('is-loaded');
+    });
+  };
   document.addEventListener('load', markImgLoaded, true);
   document.addEventListener('error', markImgLoaded, true);
 
@@ -7877,6 +7904,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
         `;
 
+        // no fade replay for a cover this session has already shown (virtualised rows are recreated on scroll)
+        markCachedThumbsLoaded(row);
+
         if (multiSel.active && multiSel.context === context) {
           const chk = document.createElement('span');
           chk.className = 'track-row-check';
@@ -8180,6 +8210,61 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('resize', closeTrackContextMenu);
   document.addEventListener('scroll', closeTrackContextMenu, true);
 
+  // A small anchored menu for header actions (share/export, select, sort). Reuses the track menu's look.
+  let actionMenuEl = null;
+  let actionMenuAnchor = null;
+  function closeActionMenu() {
+    if (actionMenuEl) actionMenuEl.remove();
+    actionMenuEl = null;
+    actionMenuAnchor = null;
+  }
+  function openActionMenu(anchor, items) {
+    if (!anchor) return;
+    if (actionMenuEl && actionMenuAnchor === anchor) { closeActionMenu(); return; }
+    closeActionMenu();
+    const menu = document.createElement('div');
+    menu.className = 'track-context-menu action-menu';
+    menu.setAttribute('role', 'menu');
+    items.forEach((item) => {
+      if (item.separator) {
+        const sep = document.createElement('div');
+        sep.className = 'action-menu-sep';
+        menu.appendChild(sep);
+        return;
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'track-context-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
+      b.setAttribute('role', 'menuitem');
+      b.textContent = (item.checked ? '✓ ' : '') + T(item.label);
+      b.dataset.i18n = '';
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeActionMenu();
+        if (item.run) item.run();
+      });
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const mr = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mr.width - 8))}px`;
+    let top = r.bottom + 8;
+    if (top + mr.height > window.innerHeight - 8) top = Math.max(8, r.top - mr.height - 8);
+    menu.style.top = `${top}px`;
+    actionMenuEl = menu;
+    actionMenuAnchor = anchor;
+  }
+  document.addEventListener('click', (e) => {
+    if (!actionMenuEl) return;
+    if (actionMenuEl.contains(e.target)) return;
+    if (actionMenuAnchor && actionMenuAnchor.contains(e.target)) return; // the trigger toggles itself
+    closeActionMenu();
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActionMenu(); });
+  window.addEventListener('scroll', closeActionMenu, true);
+  window.addEventListener('resize', closeActionMenu);
+
   function renderTracks(container, tracks, context = 'search') {
     if (!container) return;
     
@@ -8190,6 +8275,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     container.innerHTML = '';
+    // the first paint may fade covers in; later virtualised re-renders must not replay it (the list flashed)
+    container.classList.remove('no-thumb-fade');
     
     if (!tracks || tracks.length === 0) {
       container.style.paddingTop = '0px';
@@ -8229,6 +8316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       container._lastEndIndex = endIndex;
       
       const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
+      if (container._hasInitialRendered) container.classList.add('no-thumb-fade');
       const fragment = document.createDocumentFragment();
       for (let idx = startIndex; idx < endIndex; idx++) {
          const track = tracks[idx];
@@ -8761,6 +8849,51 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (el.favoritesSearchInput) {
     el.favoritesSearchInput.addEventListener('input', () => renderFavoritesView());
   }
+
+  // Favorites: Select and Download move into one overflow menu, and the toolbar (search + sort + overflow)
+  // slides out of the way when the list scrolls down, then comes back on the first upward swipe.
+  (function setupFavoritesToolbar() {
+    const more = document.getElementById('btn-favorites-more');
+    if (more) {
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openActionMenu(more, [
+          { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-favorites'); if (b) b.click(); } },
+          { label: 'Download all', run: () => { const b = document.getElementById('btn-download-favorites'); if (b) b.click(); } }
+        ]);
+      });
+    }
+    const toolbar = document.getElementById('favorites-toolbar');
+    const view = document.getElementById('view-favorites');
+    const main = document.querySelector('.main-content');
+    if (!toolbar || !view || !main) return;
+    let lastTop = main.scrollTop;
+    let ticking = false;
+    const update = () => {
+      ticking = false;
+      if (!view.classList.contains('active')) {
+        toolbar.classList.remove('fav-toolbar-hidden');
+        lastTop = main.scrollTop;
+        return;
+      }
+      const top = main.scrollTop;
+      const delta = top - lastTop;
+      if (Math.abs(delta) < 6) return;
+      const busy = (document.activeElement && toolbar.contains(document.activeElement))
+        || Boolean(toolbar.querySelector('.sort-dropdown.open'));
+      if (top <= 24 || delta < 0) toolbar.classList.remove('fav-toolbar-hidden');
+      else if (delta > 0 && !busy) toolbar.classList.add('fav-toolbar-hidden');
+      lastTop = top;
+    };
+    main.addEventListener('scroll', () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(update);
+    }, { passive: true });
+    new MutationObserver(() => {
+      if (view.classList.contains('active')) toolbar.classList.remove('fav-toolbar-hidden');
+    }).observe(view, { attributes: true, attributeFilter: ['class'] });
+  })();
 
   // Sort menus of Favorites and playlists: a Material dropdown in front of the <select> (still the value), with
   // the select's options, so the list of orders stays in one place (track-sort.js does the sorting)
@@ -9449,9 +9582,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     const onPointerUp = (e) => {
-      if (e && activePointerId !== null && e.pointerId !== activePointerId) return;
+      // touchmove/touchcancel have no pointerId; only enforce it for real pointer events
+      if (e && typeof e.pointerId === 'number' && activePointerId !== null && e.pointerId !== activePointerId) return;
       // the browser took the gesture over (it began a scroll): put the row back where it was
-      if (e && e.type === 'pointercancel') targetIndex = startIndex;
+      if (e && (e.type === 'pointercancel' || e.type === 'touchcancel')) targetIndex = startIndex;
       clearTimeout(pressTimer);
       clearInterval(autoScrollTimer);
       window.removeEventListener('pointermove', onPointerMove);
@@ -9533,8 +9667,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     container.addEventListener('pointerdown', onPointerDown);
-    // once a held row is lifted the finger moves it, so the list must not scroll underneath
-    container.addEventListener('touchmove', (e) => { if (isDragging) e.preventDefault(); }, { passive: false });
+    // Touch events fire earlier and more reliably than pointermove on iOS. A finger that moves is scrolling
+    // the list, not holding a row: cancel the hold timer before startDrag can capture the row and swallow the
+    // scroll. Once a row is really lifted, keep the list still underneath the finger.
+    container.addEventListener('touchmove', (e) => {
+      const t = e.touches && e.touches[0];
+      if (!t) return;
+      if (!isDragging) {
+        if (draggedItem && Math.hypot(t.clientX - startX, t.clientY - startY) > 8) {
+          clearTimeout(pressTimer);
+          onPointerUp(e);
+        }
+        return;
+      }
+      e.preventDefault();
+    }, { passive: false });
+    container.addEventListener('touchcancel', (e) => { if (draggedItem) onPointerUp(e); }, { passive: true });
   }
 
   initListReordering({
@@ -9726,7 +9874,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) { window.prompt(T('Copy this link'), link); }
   }
   const btnSharePlaylist = document.getElementById('btn-share-playlist');
-  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', () => sharePlaylist(state.playlists.find(p => p.id === state.currentPlaylistId)));
+  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+    openActionMenu(btnSharePlaylist, [
+      { label: 'Share playlist link', run: () => sharePlaylist(pl) },
+      { label: 'Export as JSON file', run: () => { const b = document.getElementById('btn-export-playlist'); if (b) b.click(); } }
+    ]);
+  });
 
   // a playlist someone shared: from a muriel://playlist link, the search bar or the link importer
   let importingShare = '';
@@ -9790,7 +9945,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const btn = document.getElementById('btn-rename-playlist');
     const titleEl = document.getElementById('playlist-detail-title');
     if (!btn || !titleEl) return;
-    btn.addEventListener('click', () => {
+    const startRename = () => {
       const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
       if (!pl || titleEl.querySelector('input')) return;
       const input = document.createElement('input');
@@ -9819,6 +9974,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         else if (e.key === 'Escape') finish(false);
       });
       input.addEventListener('blur', () => finish(true));
+    };
+    btn.addEventListener('click', startRename);
+    // the visible playlist name is the rename control now, instead of another header button
+    titleEl.classList.add('playlist-title-editable');
+    titleEl.title = T('Tap to rename');
+    titleEl.setAttribute('role', 'button');
+    titleEl.tabIndex = 0;
+    titleEl.addEventListener('click', (e) => { e.stopPropagation(); startRename(); });
+    titleEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startRename(); }
+    });
+  })();
+
+  // Playlist overflow: Select tracks, duplicate cleanup and the manual/sort order live here instead of the
+  // already crowded action row.
+  (function setupPlaylistMoreMenu() {
+    const btn = document.getElementById('btn-playlist-more');
+    if (!btn) return;
+    const sortLabel = () => {
+      if (!el.playlistSort || el.playlistSort.selectedIndex < 0) return T('Manual order');
+      return el.playlistSort.options[el.playlistSort.selectedIndex].textContent;
+    };
+    const openSortMenu = () => {
+      if (!el.playlistSort) return;
+      openActionMenu(btn, [...el.playlistSort.options].map((o) => ({
+        label: o.textContent,
+        checked: o.value === el.playlistSort.value,
+        run: () => {
+          if (el.playlistSort.value === o.value) return;
+          el.playlistSort.value = o.value;
+          el.playlistSort.dispatchEvent(new Event('change'));
+        }
+      })));
+    };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const items = [
+        { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-playlist'); if (b) b.click(); } },
+        { separator: true },
+        { label: `Sort playlist: ${sortLabel()}`, run: openSortMenu }
+      ];
+      const dup = el.btnDedupePlaylist;
+      const dupCount = dup ? Number(dup.dataset.duplicates || 0) : 0;
+      if (dupCount > 0 && dup) {
+        items.splice(2, 0, {
+          label: dupCount === 1 ? 'Remove 1 duplicate' : `Remove ${dupCount} duplicates`,
+          run: () => dup.click()
+        });
+      }
+      openActionMenu(btn, items);
     });
   })();
 
@@ -19708,7 +19913,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderPlaylistDuplicateButton(pl) {
     if (!el.btnDedupePlaylist || !pl) return;
     const duplicates = pl.tracks.length - dedupeTracks(pl.tracks, isSameTrack, getTrackCanonicalId).length;
-    el.btnDedupePlaylist.classList.toggle('hidden', duplicates === 0);
+    // the button stays out of the header; the "..." menu shows it only while there is something to remove
+    el.btnDedupePlaylist.classList.add('hidden');
+    el.btnDedupePlaylist.dataset.duplicates = String(duplicates);
     if (el.btnDedupePlaylistLabel) {
       el.btnDedupePlaylistLabel.textContent = duplicates === 1 ? 'Remove 1 duplicate' : `Remove ${duplicates} duplicates`;
     }

@@ -1376,6 +1376,34 @@ body.perf .my-wave-ambient-light {
   padding-bottom: 0;
 }
 
+/* Favorites: search + sort + overflow in one sticky bar. app.js hides it on scroll down and brings it back on
+   scroll up, so the list gets the whole screen while the controls stay one short swipe away. */
+#view-favorites .fav-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  margin: -8px -8px 12px;
+  border-radius: 18px;
+  background: var(--md-sys-color-surface-container-low);
+  transition: transform 240ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease;
+}
+#view-favorites .fav-toolbar .view-search-box {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+#view-favorites .fav-toolbar .sort-dropdown { flex: none; }
+#view-favorites .fav-toolbar .sort-dropdown .m3-dropdown-trigger { max-width: min(46vw, 210px); }
+#view-favorites .fav-toolbar.fav-toolbar-hidden {
+  transform: translateY(calc(-100% - 12px));
+  opacity: 0;
+  pointer-events: none;
+}
+
 .search-artist-card {
   display: flex;
   align-items: center;
@@ -2349,6 +2377,16 @@ body.no-page-glow .artist-hero { background: var(--md-sys-color-surface-containe
 }
 .track-context-item.danger {
   color: var(--md-sys-color-error);
+}
+.action-menu-sep {
+  height: 1px;
+  margin: 6px 10px;
+  background: var(--md-sys-color-outline-variant);
+  opacity: 0.6;
+}
+.action-menu .track-context-item.checked {
+  color: var(--md-sys-color-primary);
+  font-weight: 600;
 }
 
 .playbar {
@@ -4572,6 +4610,18 @@ button:active svg, button:active img, button:active i, .btn-icon-pill:active svg
   flex: 1 !important;
   min-width: 0 !important;
 }
+#playlist-detail-title.playlist-title-editable {
+  cursor: text;
+  border-radius: 10px;
+  transition: background-color 160ms ease;
+}
+#playlist-detail-title.playlist-title-editable:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+#playlist-detail-title.playlist-title-editable:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 3px;
+}
 
 .playlist-type-badge {
   font-size: calc(11px * var(--font-scale, 1));
@@ -6606,10 +6656,11 @@ body.mini.mini-lyrics-on #btn-mini-lyrics {
 .favorites-view {
   box-sizing: border-box !important;
 }
-#view-playlist-detail,
-#view-favorites {
+#view-playlist-detail {
   overflow-x: hidden;
 }
+/* Favorites must not clip on an intermediate element: an overflow ancestor turns the sticky search bar into a
+   non-sticky child of that box. .main-content already clips horizontal overflow for the whole page. */
 
 .keycap { position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; padding: 0 12px 4px; box-sizing: border-box; border-radius: 9px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface-container-lowest)); color: var(--md-sys-color-on-surface); font: 600 13px/1 var(--font-family, inherit); letter-spacing: .02em; user-select: none; }
 .keycap::before { content: ''; position: absolute; z-index: -1; inset: 2px 2px 6px 2px; border-radius: 7px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, var(--md-sys-color-surface-container-high)); border-top: 1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 22%, transparent); transition: inset .08s ease; }
@@ -8245,6 +8296,13 @@ html.theme-vt::view-transition-new(root) {
 }
 :is(.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img):not(.is-loaded) {
   opacity: 0;
+}
+/* virtualised lists rebuild their rows on every scroll step; a cover that was already visible must not fade
+   in again each time (Queue and Favorites flashed while scrolling) */
+.tracks-list.no-thumb-fade .track-row-thumb,
+.tracks-list.no-thumb-fade .track-row-thumb:not(.is-loaded) {
+  opacity: 1 !important;
+  transition: none !important;
 }
 
 .track-row.playing {

@@ -537,7 +537,24 @@ html.is-mobile .playlist-actions {
   width: 100%;
 }
 html.is-mobile .playlist-actions .pill-select { max-width: 100%; }
-html.is-mobile #view-favorites .view-header { margin-bottom: 12px; flex-wrap: wrap; }
+/* the row is icon-only on a phone so the six actions fit on one line */
+html.is-mobile .playlist-actions > button:not(.hidden) {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+html.is-mobile .playlist-actions #btn-shuffle-playlist span { display: none; }
+html.is-mobile #view-favorites .fav-toolbar {
+  gap: 8px;
+  padding: 6px;
+  margin: -4px -6px 10px;
+}
+html.is-mobile #view-favorites .fav-toolbar .sort-dropdown .m3-dropdown-trigger { padding: 8px 10px; }
 
 /* hold a song for its menu: no iOS text-selection loupe or link callout, and a small lift as feedback */
 html.is-mobile .track-row { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }

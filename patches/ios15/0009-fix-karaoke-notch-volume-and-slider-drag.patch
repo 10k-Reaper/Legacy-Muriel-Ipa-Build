@@ -1,5 +1,5 @@
 diff --git a/app.js b/app.js
-index 69d5c18..3acc15c 100644
+index 69d5c18..297e285 100644
 --- a/app.js
 +++ b/app.js
 @@ -23,6 +23,32 @@
@@ -35,7 +35,24 @@ index 69d5c18..3acc15c 100644
  // localStorage (~5 MB) holds favorites, playlists, history, the queue and Encore. When it was full, every
  // setItem threw: a song tap failed before the stream was even requested and new favorites vanished on restart.
  // Free what can be rebuilt (the phone debug log, old Encore days) and retry; if it still doesn't fit, report
-@@ -2654,7 +2680,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -2149,6 +2175,16 @@ document.addEventListener('DOMContentLoaded', async () => {
+       hold.moved = true;
+       if (!hold.fired) end();
+     };
++    // iOS can start a scroll without delivering pointermove, so the hold also watches touchmove: a moving
++    // finger is scrolling the list, never a hold for the song menu
++    const touchMove = (e) => {
++      if (!hold) return;
++      const t = e.touches && e.touches[0];
++      if (!t || Math.hypot(t.clientX - hold.x, t.clientY - hold.y) <= 8) return;
++      hold.moved = true;
++      end();
++    };
++    document.addEventListener('touchmove', touchMove, { passive: true, capture: true });
+     const up = (e) => {
+       if (!hold || e.pointerId !== hold.id) return;
+       const h = hold; end();
+@@ -2654,7 +2690,13 @@ document.addEventListener('DOMContentLoaded', async () => {
      }
      const tvkCanvas = document.getElementById('tvk-visualizer-canvas');
      if (tvkCanvas) {
@@ -50,7 +67,33 @@ index 69d5c18..3acc15c 100644
        const cssH = Math.min(84, Math.max(52, Math.round(window.innerHeight * 0.085)));
        cachedTvkWidth = cssW;
        cachedTvkHeight = cssH;
-@@ -3782,6 +3814,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3243,7 +3285,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+   }
+ 
+   const FADE_IMG_SEL = '.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img';
+-  const markImgLoaded = (e) => { const t = e.target; if (t.tagName === 'IMG' && t.matches(FADE_IMG_SEL)) t.classList.add('is-loaded'); };
++  // The queue and the long lists rebuild their rows while scrolling. Every new <img> starts at opacity 0 and
++  // fades in on its load event, so a cover that was already on screen faded again on every re-render and the
++  // list flashed. Remember which covers have loaded once and start those rows visible.
++  const loadedImgSrcs = new Set();
++  const markImgLoaded = (e) => {
++    const t = e.target;
++    if (t.tagName !== 'IMG' || !t.matches(FADE_IMG_SEL)) return;
++    t.classList.add('is-loaded');
++    const src = t.currentSrc || t.src;
++    if (src) loadedImgSrcs.add(src);
++  };
++  const markCachedThumbsLoaded = (root) => {
++    if (!root || !root.querySelectorAll) return;
++    root.querySelectorAll('img.track-row-thumb').forEach((img) => {
++      const src = img.currentSrc || img.src;
++      if (img.complete || (src && loadedImgSrcs.has(src))) img.classList.add('is-loaded');
++    });
++  };
+   document.addEventListener('load', markImgLoaded, true);
+   document.addEventListener('error', markImgLoaded, true);
+ 
+@@ -3782,6 +3841,7 @@ document.addEventListener('DOMContentLoaded', async () => {
        el.nativeAudio.pause();
        el.nativeAudio.removeAttribute('src');
        el.nativeAudio.load();
@@ -58,7 +101,7 @@ index 69d5c18..3acc15c 100644
      } catch (e) {}
  
      if (hlsInstance) {
-@@ -3873,6 +3906,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3873,6 +3933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          if (currentToken !== state.loadToken) return;
          el.nativeAudio.preload = 'auto';
          el.nativeAudio.src = streamUrl;
@@ -66,7 +109,7 @@ index 69d5c18..3acc15c 100644
          playSmooth();
          applyAudioSettings();
          return;
-@@ -3936,6 +3970,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3936,6 +3997,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.nativeAudio.preload = 'auto';
  
      if (data.isHls && window.Hls && Hls.isSupported()) {
@@ -76,7 +119,7 @@ index 69d5c18..3acc15c 100644
        hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 30 * 1000 * 1000 });
        hlsInstance.loadSource(data.streamUrl);
        hlsInstance.attachMedia(el.nativeAudio);
-@@ -3967,6 +4004,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3967,6 +4031,9 @@ document.addEventListener('DOMContentLoaded', async () => {
        // which fetches with yt-dlp's headers; the direct URL stays as a fallback.
        const src = pickStreamSrc(data);
        proxyFallback = src !== data.streamUrl ? null : { token: currentToken, track, url: data.proxyUrl || '' };
@@ -86,7 +129,7 @@ index 69d5c18..3acc15c 100644
        el.nativeAudio.src = src;
        playSmooth();
      }
-@@ -3993,6 +4033,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -3993,6 +4060,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      const me = el.nativeAudio.error;
      if (!me || (me.code !== 4 && me.code !== 2)) return false;
      console.warn('Track playback: direct stream failed, trying the local proxy');
@@ -94,7 +137,7 @@ index 69d5c18..3acc15c 100644
      el.nativeAudio.src = fb.url;
      playSmooth();
      return true;
-@@ -4908,6 +4949,8 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -4908,6 +4976,8 @@ document.addEventListener('DOMContentLoaded', async () => {
      tvIdleTimer = setTimeout(() => {
        const tvkPanel = document.getElementById('tvk-panel');
        if (tvkPanel && tvkPanel.classList.contains('open')) return;
@@ -103,7 +146,7 @@ index 69d5c18..3acc15c 100644
        if (state.isTvKaraokeOpen && el.tvKaraoke) {
          el.tvKaraoke.classList.add('tv-idle');
        }
-@@ -5342,7 +5385,11 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -5342,7 +5412,11 @@ document.addEventListener('DOMContentLoaded', async () => {
      el.tvKaraokeClose.addEventListener('click', closeTvKaraoke);
    }
    if (el.tvKaraoke) {
@@ -116,7 +159,268 @@ index 69d5c18..3acc15c 100644
    }
  
    const btnTvkPrev = document.getElementById('btn-tvk-prev');
-@@ -10771,14 +10818,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -7830,6 +7904,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+         </div>
+         `;
+ 
++        // no fade replay for a cover this session has already shown (virtualised rows are recreated on scroll)
++        markCachedThumbsLoaded(row);
++
+         if (multiSel.active && multiSel.context === context) {
+           const chk = document.createElement('span');
+           chk.className = 'track-row-check';
+@@ -8133,6 +8210,61 @@ document.addEventListener('DOMContentLoaded', async () => {
+   window.addEventListener('resize', closeTrackContextMenu);
+   document.addEventListener('scroll', closeTrackContextMenu, true);
+ 
++  // A small anchored menu for header actions (share/export, select, sort). Reuses the track menu's look.
++  let actionMenuEl = null;
++  let actionMenuAnchor = null;
++  function closeActionMenu() {
++    if (actionMenuEl) actionMenuEl.remove();
++    actionMenuEl = null;
++    actionMenuAnchor = null;
++  }
++  function openActionMenu(anchor, items) {
++    if (!anchor) return;
++    if (actionMenuEl && actionMenuAnchor === anchor) { closeActionMenu(); return; }
++    closeActionMenu();
++    const menu = document.createElement('div');
++    menu.className = 'track-context-menu action-menu';
++    menu.setAttribute('role', 'menu');
++    items.forEach((item) => {
++      if (item.separator) {
++        const sep = document.createElement('div');
++        sep.className = 'action-menu-sep';
++        menu.appendChild(sep);
++        return;
++      }
++      const b = document.createElement('button');
++      b.type = 'button';
++      b.className = 'track-context-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
++      b.setAttribute('role', 'menuitem');
++      b.textContent = (item.checked ? '✓ ' : '') + T(item.label);
++      b.dataset.i18n = '';
++      b.addEventListener('click', (e) => {
++        e.stopPropagation();
++        closeActionMenu();
++        if (item.run) item.run();
++      });
++      menu.appendChild(b);
++    });
++    document.body.appendChild(menu);
++    const r = anchor.getBoundingClientRect();
++    const mr = menu.getBoundingClientRect();
++    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mr.width - 8))}px`;
++    let top = r.bottom + 8;
++    if (top + mr.height > window.innerHeight - 8) top = Math.max(8, r.top - mr.height - 8);
++    menu.style.top = `${top}px`;
++    actionMenuEl = menu;
++    actionMenuAnchor = anchor;
++  }
++  document.addEventListener('click', (e) => {
++    if (!actionMenuEl) return;
++    if (actionMenuEl.contains(e.target)) return;
++    if (actionMenuAnchor && actionMenuAnchor.contains(e.target)) return; // the trigger toggles itself
++    closeActionMenu();
++  }, true);
++  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeActionMenu(); });
++  window.addEventListener('scroll', closeActionMenu, true);
++  window.addEventListener('resize', closeActionMenu);
++
+   function renderTracks(container, tracks, context = 'search') {
+     if (!container) return;
+     
+@@ -8143,6 +8275,8 @@ document.addEventListener('DOMContentLoaded', async () => {
+     }
+     
+     container.innerHTML = '';
++    // the first paint may fade covers in; later virtualised re-renders must not replay it (the list flashed)
++    container.classList.remove('no-thumb-fade');
+     
+     if (!tracks || tracks.length === 0) {
+       container.style.paddingTop = '0px';
+@@ -8182,6 +8316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+       container._lastEndIndex = endIndex;
+       
+       const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
++      if (container._hasInitialRendered) container.classList.add('no-thumb-fade');
+       const fragment = document.createDocumentFragment();
+       for (let idx = startIndex; idx < endIndex; idx++) {
+          const track = tracks[idx];
+@@ -8715,6 +8850,51 @@ document.addEventListener('DOMContentLoaded', async () => {
+     el.favoritesSearchInput.addEventListener('input', () => renderFavoritesView());
+   }
+ 
++  // Favorites: Select and Download move into one overflow menu, and the toolbar (search + sort + overflow)
++  // slides out of the way when the list scrolls down, then comes back on the first upward swipe.
++  (function setupFavoritesToolbar() {
++    const more = document.getElementById('btn-favorites-more');
++    if (more) {
++      more.addEventListener('click', (e) => {
++        e.stopPropagation();
++        openActionMenu(more, [
++          { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-favorites'); if (b) b.click(); } },
++          { label: 'Download all', run: () => { const b = document.getElementById('btn-download-favorites'); if (b) b.click(); } }
++        ]);
++      });
++    }
++    const toolbar = document.getElementById('favorites-toolbar');
++    const view = document.getElementById('view-favorites');
++    const main = document.querySelector('.main-content');
++    if (!toolbar || !view || !main) return;
++    let lastTop = main.scrollTop;
++    let ticking = false;
++    const update = () => {
++      ticking = false;
++      if (!view.classList.contains('active')) {
++        toolbar.classList.remove('fav-toolbar-hidden');
++        lastTop = main.scrollTop;
++        return;
++      }
++      const top = main.scrollTop;
++      const delta = top - lastTop;
++      if (Math.abs(delta) < 6) return;
++      const busy = (document.activeElement && toolbar.contains(document.activeElement))
++        || Boolean(toolbar.querySelector('.sort-dropdown.open'));
++      if (top <= 24 || delta < 0) toolbar.classList.remove('fav-toolbar-hidden');
++      else if (delta > 0 && !busy) toolbar.classList.add('fav-toolbar-hidden');
++      lastTop = top;
++    };
++    main.addEventListener('scroll', () => {
++      if (ticking) return;
++      ticking = true;
++      requestAnimationFrame(update);
++    }, { passive: true });
++    new MutationObserver(() => {
++      if (view.classList.contains('active')) toolbar.classList.remove('fav-toolbar-hidden');
++    }).observe(view, { attributes: true, attributeFilter: ['class'] });
++  })();
++
+   // Sort menus of Favorites and playlists: a Material dropdown in front of the <select> (still the value), with
+   // the select's options, so the list of orders stays in one place (track-sort.js does the sorting)
+   // (var: a view can render before this line has run)
+@@ -9402,9 +9582,10 @@ document.addEventListener('DOMContentLoaded', async () => {
+     };
+ 
+     const onPointerUp = (e) => {
+-      if (e && activePointerId !== null && e.pointerId !== activePointerId) return;
++      // touchmove/touchcancel have no pointerId; only enforce it for real pointer events
++      if (e && typeof e.pointerId === 'number' && activePointerId !== null && e.pointerId !== activePointerId) return;
+       // the browser took the gesture over (it began a scroll): put the row back where it was
+-      if (e && e.type === 'pointercancel') targetIndex = startIndex;
++      if (e && (e.type === 'pointercancel' || e.type === 'touchcancel')) targetIndex = startIndex;
+       clearTimeout(pressTimer);
+       clearInterval(autoScrollTimer);
+       window.removeEventListener('pointermove', onPointerMove);
+@@ -9486,8 +9667,22 @@ document.addEventListener('DOMContentLoaded', async () => {
+     };
+ 
+     container.addEventListener('pointerdown', onPointerDown);
+-    // once a held row is lifted the finger moves it, so the list must not scroll underneath
+-    container.addEventListener('touchmove', (e) => { if (isDragging) e.preventDefault(); }, { passive: false });
++    // Touch events fire earlier and more reliably than pointermove on iOS. A finger that moves is scrolling
++    // the list, not holding a row: cancel the hold timer before startDrag can capture the row and swallow the
++    // scroll. Once a row is really lifted, keep the list still underneath the finger.
++    container.addEventListener('touchmove', (e) => {
++      const t = e.touches && e.touches[0];
++      if (!t) return;
++      if (!isDragging) {
++        if (draggedItem && Math.hypot(t.clientX - startX, t.clientY - startY) > 8) {
++          clearTimeout(pressTimer);
++          onPointerUp(e);
++        }
++        return;
++      }
++      e.preventDefault();
++    }, { passive: false });
++    container.addEventListener('touchcancel', (e) => { if (draggedItem) onPointerUp(e); }, { passive: true });
+   }
+ 
+   initListReordering({
+@@ -9679,7 +9874,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+     } catch (e) { window.prompt(T('Copy this link'), link); }
+   }
+   const btnSharePlaylist = document.getElementById('btn-share-playlist');
+-  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', () => sharePlaylist(state.playlists.find(p => p.id === state.currentPlaylistId)));
++  if (btnSharePlaylist) btnSharePlaylist.addEventListener('click', (e) => {
++    e.stopPropagation();
++    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
++    openActionMenu(btnSharePlaylist, [
++      { label: 'Share playlist link', run: () => sharePlaylist(pl) },
++      { label: 'Export as JSON file', run: () => { const b = document.getElementById('btn-export-playlist'); if (b) b.click(); } }
++    ]);
++  });
+ 
+   // a playlist someone shared: from a muriel://playlist link, the search bar or the link importer
+   let importingShare = '';
+@@ -9743,7 +9945,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+     const btn = document.getElementById('btn-rename-playlist');
+     const titleEl = document.getElementById('playlist-detail-title');
+     if (!btn || !titleEl) return;
+-    btn.addEventListener('click', () => {
++    const startRename = () => {
+       const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+       if (!pl || titleEl.querySelector('input')) return;
+       const input = document.createElement('input');
+@@ -9772,6 +9974,56 @@ document.addEventListener('DOMContentLoaded', async () => {
+         else if (e.key === 'Escape') finish(false);
+       });
+       input.addEventListener('blur', () => finish(true));
++    };
++    btn.addEventListener('click', startRename);
++    // the visible playlist name is the rename control now, instead of another header button
++    titleEl.classList.add('playlist-title-editable');
++    titleEl.title = T('Tap to rename');
++    titleEl.setAttribute('role', 'button');
++    titleEl.tabIndex = 0;
++    titleEl.addEventListener('click', (e) => { e.stopPropagation(); startRename(); });
++    titleEl.addEventListener('keydown', (e) => {
++      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startRename(); }
++    });
++  })();
++
++  // Playlist overflow: Select tracks, duplicate cleanup and the manual/sort order live here instead of the
++  // already crowded action row.
++  (function setupPlaylistMoreMenu() {
++    const btn = document.getElementById('btn-playlist-more');
++    if (!btn) return;
++    const sortLabel = () => {
++      if (!el.playlistSort || el.playlistSort.selectedIndex < 0) return T('Manual order');
++      return el.playlistSort.options[el.playlistSort.selectedIndex].textContent;
++    };
++    const openSortMenu = () => {
++      if (!el.playlistSort) return;
++      openActionMenu(btn, [...el.playlistSort.options].map((o) => ({
++        label: o.textContent,
++        checked: o.value === el.playlistSort.value,
++        run: () => {
++          if (el.playlistSort.value === o.value) return;
++          el.playlistSort.value = o.value;
++          el.playlistSort.dispatchEvent(new Event('change'));
++        }
++      })));
++    };
++    btn.addEventListener('click', (e) => {
++      e.stopPropagation();
++      const items = [
++        { label: 'Select tracks', run: () => { const b = document.getElementById('btn-select-playlist'); if (b) b.click(); } },
++        { separator: true },
++        { label: `Sort playlist: ${sortLabel()}`, run: openSortMenu }
++      ];
++      const dup = el.btnDedupePlaylist;
++      const dupCount = dup ? Number(dup.dataset.duplicates || 0) : 0;
++      if (dupCount > 0 && dup) {
++        items.splice(2, 0, {
++          label: dupCount === 1 ? 'Remove 1 duplicate' : `Remove ${dupCount} duplicates`,
++          run: () => dup.click()
++        });
++      }
++      openActionMenu(btn, items);
+     });
+   })();
+ 
+@@ -10771,14 +11023,22 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (el.volumeMutedIcon) el.volumeMutedIcon.classList.toggle('hidden', !state.isMuted);
    }
  
@@ -144,7 +448,7 @@ index 69d5c18..3acc15c 100644
    }
  
    syncVolumeControls();
-@@ -11373,8 +11428,31 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11373,8 +11633,31 @@ document.addEventListener('DOMContentLoaded', async () => {
      });
    }
  
@@ -176,7 +480,7 @@ index 69d5c18..3acc15c 100644
        const val = parseInt(e.target.value, 10);
        if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
        document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
-@@ -11463,7 +11541,15 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11463,7 +11746,15 @@ document.addEventListener('DOMContentLoaded', async () => {
    }, 50);
  
    if (el.sliderCornerRadius) {
@@ -192,7 +496,7 @@ index 69d5c18..3acc15c 100644
        const val = parseInt(e.target.value, 10);
        if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
        document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
-@@ -11473,7 +11559,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11473,7 +11764,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderUiAlpha) {
@@ -207,7 +511,7 @@ index 69d5c18..3acc15c 100644
        const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
-@@ -11494,7 +11587,14 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11494,7 +11792,14 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    if (el.sliderTextAlpha) {
@@ -222,7 +526,7 @@ index 69d5c18..3acc15c 100644
        const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
        if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
        document.documentElement.style.setProperty('--text-alpha', `${val}%`);
-@@ -11740,7 +11840,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11740,7 +12045,7 @@ document.addEventListener('DOMContentLoaded', async () => {
    }
  
    function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
@@ -231,7 +535,7 @@ index 69d5c18..3acc15c 100644
    function backgroundActive() { return !!localStorage.getItem('muriel_bg_url') || getAdv('cover_bg', true); }
    function onBackgroundChanged(kind, enabled) {
      if (!getAdv('ui_alpha_auto', true)) return;
-@@ -11820,11 +11920,24 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -11820,11 +12125,24 @@ document.addEventListener('DOMContentLoaded', async () => {
      if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
      document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
  
@@ -257,7 +561,7 @@ index 69d5c18..3acc15c 100644
      });
    }
  
-@@ -12317,6 +12430,97 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12317,6 +12635,97 @@ document.addEventListener('DOMContentLoaded', async () => {
      Object.defineProperty(input, 'value', { configurable: true, get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); onChange(); } });
      input.addEventListener('input', onChange);
    }
@@ -355,7 +659,7 @@ index 69d5c18..3acc15c 100644
    function enhanceSliders(root) {
      (root || document).querySelectorAll('input[type="range"]:not(.sl-done):not(#slider-theme-hue)').forEach((input) => {
        if (input.closest('.eq-slider-box') || input.closest('.eq-slider-wrap') || input.closest('.hue-seg') || input.classList.contains('eq-band-range')) return;
-@@ -12332,6 +12536,7 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -12332,6 +12741,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          wrap.style.setProperty('--v', max > min ? (parseFloat(input.value) - min) / (max - min) : 0);
        };
        watchSliderValue(input, sync);
@@ -363,7 +667,18 @@ index 69d5c18..3acc15c 100644
        sync();
      });
    }
-@@ -19784,9 +19989,13 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19503,7 +19913,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+   function renderPlaylistDuplicateButton(pl) {
+     if (!el.btnDedupePlaylist || !pl) return;
+     const duplicates = pl.tracks.length - dedupeTracks(pl.tracks, isSameTrack, getTrackCanonicalId).length;
+-    el.btnDedupePlaylist.classList.toggle('hidden', duplicates === 0);
++    // the button stays out of the header; the "..." menu shows it only while there is something to remove
++    el.btnDedupePlaylist.classList.add('hidden');
++    el.btnDedupePlaylist.dataset.duplicates = String(duplicates);
+     if (el.btnDedupePlaylistLabel) {
+       el.btnDedupePlaylistLabel.textContent = duplicates === 1 ? 'Remove 1 duplicate' : `Remove ${duplicates} duplicates`;
+     }
+@@ -19784,9 +20196,13 @@ document.addEventListener('DOMContentLoaded', async () => {
        const a = el.nativeAudio;
        return a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : ((state.currentTrack && Number(state.currentTrack.duration)) || 0);
      };
@@ -378,7 +693,7 @@ index 69d5c18..3acc15c 100644
        const t = (Number(slider.value) / 1000) * durNow();
        const curEl = document.getElementById('tvk-time-current');
        if (curEl) curEl.textContent = formatDuration(t);
-@@ -19799,8 +20008,12 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -19799,8 +20215,12 @@ document.addEventListener('DOMContentLoaded', async () => {
          updateMediaPositionState();
        }
        tvkSeekDragging = false;
@@ -392,7 +707,7 @@ index 69d5c18..3acc15c 100644
      // the slider must not start a lyrics drag or hide the controls
      slider.addEventListener('mousemove', (e) => e.stopPropagation());
    })();
-@@ -20613,6 +20826,9 @@ document.addEventListener('DOMContentLoaded', async () => {
+@@ -20613,6 +21033,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      next: () => playNext(),
      prev: () => playPrev(),
      seek: (sec) => { if (isFinite(sec)) el.nativeAudio.currentTime = Math.max(0, sec); },
@@ -402,6 +717,122 @@ index 69d5c18..3acc15c 100644
      toggleShuffle: () => { if (el.btnShuffle) el.btnShuffle.click(); return state.isShuffle; },
      toggleRepeat: () => { if (el.btnRepeat) el.btnRepeat.click(); return state.repeatMode; },
      isFavorite: (t) => state.favorites.some((f) => isSameSong(f, t)),
+diff --git a/index.html b/index.html
+index ce63744..7afb4e9 100644
+--- a/index.html
++++ b/index.html
+@@ -311,18 +311,11 @@
+       </section>
+ 
+       <section class="content-view" id="view-favorites">
+-        <div class="view-header">
+-          <div>
+-            <h2>Favorites</h2>
+-            <span class="view-subtitle" id="favorites-subtitle" data-i18n>0 tracks saved</span>
++        <div class="fav-toolbar" id="favorites-toolbar">
++          <div class="view-search-box" id="favorites-search-box">
++            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
++            <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
+           </div>
+-          <button class="btn-outline-pill" id="btn-select-favorites" title="Select tracks" aria-label="Select tracks">
+-            <span>Select</span>
+-          </button>
+-          <button class="btn-outline-pill" id="btn-download-favorites" title="Download all favorites" aria-label="Download all favorites">
+-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+-            <span>Download all</span>
+-          </button>
+           <select class="pill-select" id="favorites-sort" title="Sort favorites" aria-label="Sort favorites" hidden>
+             <option value="manual">Manual order</option>
+             <option value="added-desc">Date added (newest)</option>
+@@ -341,10 +334,20 @@
+             </button>
+             <div class="m3-dropdown-menu" id="favorites-sort-menu" role="listbox"></div>
+           </div>
+-        </div>
+-        <div class="view-search-box" id="favorites-search-box">
+-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
+-          <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
++          <button class="btn-icon-pill" id="btn-favorites-more" title="More options" aria-label="More options" aria-haspopup="menu">
++            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle></svg>
++          </button>
++          <button class="hidden" id="btn-select-favorites" title="Select tracks" aria-label="Select tracks">
++            <span>Select</span>
++          </button>
++          <button class="hidden" id="btn-download-favorites" title="Download all favorites" aria-label="Download all favorites">
++            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
++            <span>Download all</span>
++          </button>
++          <div class="hidden">
++            <h2>Favorites</h2>
++            <span class="view-subtitle" id="favorites-subtitle" data-i18n>0 tracks saved</span>
++          </div>
+         </div>
+         <div class="tracks-list" id="favorites-tracks-list">
+           <div class="empty-hint">No favorite tracks yet. Click the heart icon on any song to save it.</div>
+@@ -453,10 +456,23 @@
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+                 <span>Shuffle</span>
+               </button>
+-              <button class="btn-icon-pill" id="btn-share-playlist" title="Share playlist" aria-label="Share playlist">
++              <button class="btn-icon-pill" id="btn-share-playlist" title="Share or export" aria-label="Share or export" aria-haspopup="menu">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>
+               </button>
+-              <button class="btn-outline-pill hidden" id="btn-dedupe-playlist" title="Remove duplicate tracks">
++              <button class="btn-icon-pill" id="btn-download-playlist" title="Download all songs" aria-label="Download all songs">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
++              </button>
++              <button class="btn-icon-pill" id="btn-fav-all-playlist" title="Add all to favorites" aria-label="Add all to favorites">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
++              </button>
++              <button class="btn-icon-pill" id="btn-playlist-more" title="More options" aria-label="More options" aria-haspopup="menu">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.9"></circle><circle cx="12" cy="12" r="1.9"></circle><circle cx="12" cy="19" r="1.9"></circle></svg>
++              </button>
++              <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
++                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
++              </button>
++              <!-- kept in the DOM for their handlers, but now reached from the "..." and Share menus -->
++              <button class="hidden" id="btn-dedupe-playlist" title="Remove duplicate tracks">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                 <span id="btn-dedupe-playlist-label" data-i18n>Remove duplicates</span>
+               </button>
+@@ -470,7 +486,7 @@
+                 <option value="album-asc">Album</option>
+                 <option value="duration-asc">Duration (shortest)</option>
+               </select>
+-              <div class="m3-dropdown sort-dropdown" id="playlist-sort-dropdown">
++              <div class="m3-dropdown sort-dropdown hidden" id="playlist-sort-dropdown">
+                 <button class="m3-dropdown-trigger" id="playlist-sort-trigger" type="button" title="Sort playlist" aria-label="Sort playlist" aria-haspopup="listbox">
+                   <svg class="sort-dropdown-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="7" y1="12" x2="17" y2="12"></line><line x1="10" y1="18" x2="14" y2="18"></line></svg>
+                   <span id="playlist-sort-label">Manual order</span>
+@@ -478,25 +494,15 @@
+                 </button>
+                 <div class="m3-dropdown-menu" id="playlist-sort-menu" role="listbox"></div>
+               </div>
+-              <button class="btn-outline-pill" id="btn-select-playlist" title="Select tracks" aria-label="Select tracks">
++              <button class="hidden" id="btn-select-playlist" title="Select tracks" aria-label="Select tracks">
+                 <span>Select</span>
+               </button>
+-              <button class="btn-outline-pill" id="btn-download-playlist" title="Download all songs" aria-label="Download all songs">
+-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+-                <span id="btn-download-playlist-label">Download all</span>
+-              </button>
+-              <button class="btn-icon-pill" id="btn-fav-all-playlist" title="Add all to favorites" aria-label="Add all to favorites">
+-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
+-              </button>
+-              <button class="btn-icon-pill" id="btn-rename-playlist" title="Rename playlist" aria-label="Rename playlist">
++              <button class="hidden" id="btn-rename-playlist" title="Rename playlist" aria-label="Rename playlist">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+               </button>
+-              <button class="btn-icon-pill" id="btn-export-playlist" title="Export as JSON file" aria-label="Export as JSON file">
++              <button class="hidden" id="btn-export-playlist" title="Export as JSON file" aria-label="Export as JSON file">
+                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="12" x2="12" y2="18"></line><polyline points="9 15 12 18 15 15"></polyline></svg>
+               </button>
+-              <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
+-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+-              </button>
+             </div>
+           </div>
+         </div>
 diff --git a/ios/App/App/AppDelegate.swift b/ios/App/App/AppDelegate.swift
 index f26c366..00157d5 100644
 --- a/ios/App/App/AppDelegate.swift
@@ -859,7 +1290,7 @@ index 1e81309..10882ea 100644
    // Picked images and videos (background, banner, song covers) are saved as file URLs, and those change when
    // iOS moves the app container (every update or reinstall). Rebuild each saved one from its file name, then
 diff --git a/mobile/mobile.css b/mobile/mobile.css
-index 55aebca..aac3ab4 100644
+index 55aebca..5916dc7 100644
 --- a/mobile/mobile.css
 +++ b/mobile/mobile.css
 @@ -199,7 +199,6 @@ html.is-mobile body.np-open .playback-controls { justify-content: space-between
@@ -891,7 +1322,33 @@ index 55aebca..aac3ab4 100644
  
  /* Riff 42.3 gave the Now Playing header min-height:0, so in the sheet's column it shrank to a few px and the
     lyrics tools (edit / sync / translate / fullscreen / Word) got clipped under the tabs */
-@@ -592,7 +603,60 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
+@@ -526,7 +537,24 @@ html.is-mobile .playlist-actions {
+   width: 100%;
+ }
+ html.is-mobile .playlist-actions .pill-select { max-width: 100%; }
+-html.is-mobile #view-favorites .view-header { margin-bottom: 12px; flex-wrap: wrap; }
++/* the row is icon-only on a phone so the six actions fit on one line */
++html.is-mobile .playlist-actions > button:not(.hidden) {
++  width: 40px !important;
++  height: 40px !important;
++  min-width: 40px !important;
++  padding: 0;
++  border-radius: 50%;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++}
++html.is-mobile .playlist-actions #btn-shuffle-playlist span { display: none; }
++html.is-mobile #view-favorites .fav-toolbar {
++  gap: 8px;
++  padding: 6px;
++  margin: -4px -6px 10px;
++}
++html.is-mobile #view-favorites .fav-toolbar .sort-dropdown .m3-dropdown-trigger { padding: 8px 10px; }
+ 
+ /* hold a song for its menu: no iOS text-selection loupe or link callout, and a small lift as feedback */
+ html.is-mobile .track-row { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+@@ -592,7 +620,60 @@ html.is-mobile :is(#setting-hide-titlebar-row, #setting-bar-viz-pos, #setting-ba
  html.is-mobile .tvk-row:has(#btn-tvk-viz-connected) { display: none !important; }
  html.is-mobile .tvk-liquid-layer { animation: none !important; }
  html.is-mobile .nav-home-app-icon { width: 28px; height: 28px; border-radius: 8px; }
@@ -954,10 +1411,95 @@ index 55aebca..aac3ab4 100644
  html.is-mobile .cc-handle-left { left: -12px; }
  html.is-mobile .cc-handle-right { right: -12px; }
 diff --git a/styles.css b/styles.css
-index 7f97d28..ba48ddc 100644
+index 7f97d28..0ba68d8 100644
 --- a/styles.css
 +++ b/styles.css
-@@ -6770,7 +6770,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
+@@ -1376,6 +1376,34 @@ body.perf .my-wave-ambient-light {
+   padding-bottom: 0;
+ }
+ 
++/* Favorites: search + sort + overflow in one sticky bar. app.js hides it on scroll down and brings it back on
++   scroll up, so the list gets the whole screen while the controls stay one short swipe away. */
++#view-favorites .fav-toolbar {
++  position: sticky;
++  top: 0;
++  z-index: 25;
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 8px;
++  margin: -8px -8px 12px;
++  border-radius: 18px;
++  background: var(--md-sys-color-surface-container-low);
++  transition: transform 240ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease;
++}
++#view-favorites .fav-toolbar .view-search-box {
++  flex: 1 1 auto;
++  min-width: 0;
++  margin: 0;
++}
++#view-favorites .fav-toolbar .sort-dropdown { flex: none; }
++#view-favorites .fav-toolbar .sort-dropdown .m3-dropdown-trigger { max-width: min(46vw, 210px); }
++#view-favorites .fav-toolbar.fav-toolbar-hidden {
++  transform: translateY(calc(-100% - 12px));
++  opacity: 0;
++  pointer-events: none;
++}
++
+ .search-artist-card {
+   display: flex;
+   align-items: center;
+@@ -2350,6 +2378,16 @@ body.no-page-glow .artist-hero { background: var(--md-sys-color-surface-containe
+ .track-context-item.danger {
+   color: var(--md-sys-color-error);
+ }
++.action-menu-sep {
++  height: 1px;
++  margin: 6px 10px;
++  background: var(--md-sys-color-outline-variant);
++  opacity: 0.6;
++}
++.action-menu .track-context-item.checked {
++  color: var(--md-sys-color-primary);
++  font-weight: 600;
++}
+ 
+ .playbar {
+   position: fixed;
+@@ -4572,6 +4610,18 @@ button:active svg, button:active img, button:active i, .btn-icon-pill:active svg
+   flex: 1 !important;
+   min-width: 0 !important;
+ }
++#playlist-detail-title.playlist-title-editable {
++  cursor: text;
++  border-radius: 10px;
++  transition: background-color 160ms ease;
++}
++#playlist-detail-title.playlist-title-editable:hover {
++  background: rgba(255, 255, 255, 0.07);
++}
++#playlist-detail-title.playlist-title-editable:focus-visible {
++  outline: 2px solid var(--md-sys-color-primary);
++  outline-offset: 3px;
++}
+ 
+ .playlist-type-badge {
+   font-size: calc(11px * var(--font-scale, 1));
+@@ -6606,10 +6656,11 @@ body.mini.mini-lyrics-on #btn-mini-lyrics {
+ .favorites-view {
+   box-sizing: border-box !important;
+ }
+-#view-playlist-detail,
+-#view-favorites {
++#view-playlist-detail {
+   overflow-x: hidden;
+ }
++/* Favorites must not clip on an intermediate element: an overflow ancestor turns the sticky search bar into a
++   non-sticky child of that box. .main-content already clips horizontal overflow for the whole page. */
+ 
+ .keycap { position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; padding: 0 12px 4px; box-sizing: border-box; border-radius: 9px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, var(--md-sys-color-surface-container-lowest)); color: var(--md-sys-color-on-surface); font: 600 13px/1 var(--font-family, inherit); letter-spacing: .02em; user-select: none; }
+ .keycap::before { content: ''; position: absolute; z-index: -1; inset: 2px 2px 6px 2px; border-radius: 7px; background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, var(--md-sys-color-surface-container-high)); border-top: 1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 22%, transparent); transition: inset .08s ease; }
+@@ -6770,7 +6821,7 @@ body:not(.highlight-buttons) .btn-pill-primary:hover { background: var(--md-sys-
  .sl-active, .sl-inactive { position: absolute; top: 6px; height: 16px; pointer-events: none; transition: background-color 0.2s ease; }
  .sl-active { left: 0; width: max(0px, calc((100% - 6px) * var(--v) + 3px - 8px)); background: var(--md-sys-color-primary); border-radius: 8px 3px 3px 8px; }
  .sl-inactive { right: 0; width: max(0px, calc(100% - ((100% - 6px) * var(--v) + 3px) - 8px)); background: color-mix(in srgb, var(--md-sys-color-on-surface) 16%, transparent); border-radius: 3px 8px 8px 3px; }
@@ -966,7 +1508,7 @@ index 7f97d28..ba48ddc 100644
  .sl input[type="range"]::-webkit-slider-runnable-track { height: 28px; background: transparent; }
  .sl input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 6px; height: 28px; border-radius: 3px; background: var(--md-sys-color-primary); border: none; box-shadow: none; transform: none; transition: width 0.15s ease; }
  .sl input[type="range"]:active::-webkit-slider-thumb { width: 4px; transform: none; }
-@@ -7465,6 +7465,7 @@ body.no-clip-fx .sidebar { background: color-mix(in srgb, var(--md-sys-color-sur
+@@ -7465,6 +7516,7 @@ body.no-clip-fx .sidebar { background: color-mix(in srgb, var(--md-sys-color-sur
    display: flex;
    gap: 16px;
    overflow-x: auto;
@@ -974,7 +1516,21 @@ index 7f97d28..ba48ddc 100644
    scrollbar-width: none;
    scroll-behavior: smooth;
    overscroll-behavior-x: contain;
-@@ -8379,8 +8380,10 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+@@ -8245,6 +8297,13 @@ html.theme-vt::view-transition-new(root) {
+ :is(.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img):not(.is-loaded) {
+   opacity: 0;
+ }
++/* virtualised lists rebuild their rows on every scroll step; a cover that was already visible must not fade
++   in again each time (Queue and Favorites flashed while scrolling) */
++.tracks-list.no-thumb-fade .track-row-thumb,
++.tracks-list.no-thumb-fade .track-row-thumb:not(.is-loaded) {
++  opacity: 1 !important;
++  transition: none !important;
++}
+ 
+ .track-row.playing {
+   transition: background-color 260ms cubic-bezier(0.2, 0, 0, 1), transform 0.12s cubic-bezier(0.2, 0, 0, 1);
+@@ -8379,8 +8438,10 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
  
  /* ---- For you (recommendations) ---- */
  .fy-section { animation: m3FadeUp 350ms cubic-bezier(0.2, 0, 0, 1) both; }
@@ -987,7 +1543,7 @@ index 7f97d28..ba48ddc 100644
  .fy-row::-webkit-scrollbar { display: none; }
  .fy-card, .fy-artist {
    flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; text-align: left;
-@@ -8535,6 +8538,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
+@@ -8535,6 +8596,9 @@ body.glass.glass-lite :is(.sidebar, .main-content, #right-panel, .playbar, .sear
    .volume-range::-webkit-slider-runnable-track, .wavy-track { background: rgba(255, 255, 255, .3); stroke: rgba(255, 255, 255, .3); }
    .cache-progress-track, .update-progress, .sl-inactive { background: rgba(255, 255, 255, .16); }
    .settings-nav-btn:hover, .sp-modes button:hover:not(.active), .tvk-pill-btn:hover { background: rgba(255, 255, 255, .08); }
@@ -997,7 +1553,7 @@ index 7f97d28..ba48ddc 100644
  }
  
  /* Settings → Sync (sync.js) */
-@@ -8625,7 +8631,7 @@ body.mini .profile-switch { display: none; }
+@@ -8625,7 +8689,7 @@ body.mini .profile-switch { display: none; }
  .sync-invite-text b { font-size: calc(16px * var(--font-scale, 1)); }
  .sync-invite-text span { font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); line-height: 1.45; }
  #section-home-playlists { padding-top: 6px; }
@@ -1006,7 +1562,7 @@ index 7f97d28..ba48ddc 100644
  .home-pl-row::-webkit-scrollbar { display: none; }
  .home-pl-card { flex: none; width: 150px; display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
  .home-pl-cover { width: 150px; height: 150px; border-radius: 18px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--md-sys-color-surface-container-high); margin-bottom: 4px; transition: transform .2s cubic-bezier(.2, 0, 0, 1); }
-@@ -8730,7 +8736,7 @@ body:not(.home-spotify) #sp-home { display: none; }
+@@ -8730,7 +8794,7 @@ body:not(.home-spotify) #sp-home { display: none; }
  .sp-tile-title { font-weight: 600; font-size: calc(14px * var(--font-scale, 1)); }
  .sp-tile-sub { font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); }
  .sp-fade { display: block; white-space: nowrap; overflow: hidden; text-overflow: clip; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
