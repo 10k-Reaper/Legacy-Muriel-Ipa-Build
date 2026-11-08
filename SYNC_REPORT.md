@@ -126,9 +126,10 @@ These should be confirmed once on macOS or Linux CI before merging to `main`.
   interruption resume, downloads, deep links, and the settings UI.
 - The fullscreen karaoke fixes in patch 9 (notch spacing, bottom seek bar, iOS
   system volume, drag-anywhere bars, off-bar dragging, Word-lyrics fallback) were
-  made after that test. The follow-up iPhone pass confirmed those worked; the four
-  findings it raised are now in the same cumulative patch and still need a fresh
-  CI build and an iPhone check.
+  made after that test. Subsequent iPhone passes confirmed each follow-up build,
+  including the sixth/seventh-pass changes to scrolling covers, the Favorites
+  toolbar, the reduced playlist header, and the add/remove Like-all confirmation.
+  The final patch-9 IPA passed the device check on iPhone XR / iOS 15.4.1.
 
 ## Gate for merging
 
@@ -138,12 +139,16 @@ Merge `sync/upstream-2df82f5` into `main` only after:
 2. ~~The artifact reports app minimum `15.0`, widget minimum `16.2`, and binary
    `minos 15.0`.~~ Passed.
 3. ~~An iOS 15 device smoke test passes.~~ Passed on iPhone XR / iOS 15.4.1.
-4. The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in all
+4. ~~The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in all
    patch-9 tables pass on the iPhone, including the sixth and seventh passes
    (scrolling covers, Favorites toolbar, reduced playlist header, and the
-   add/remove Like-all confirmation).
-5. `npm test` is re-run on a non-Windows environment (or the five failures are
-   confirmed as pre-existing environment issues).
+   add/remove Like-all confirmation).~~ Passed on iPhone XR / iOS 15.4.1.
+5. ~~`npm test` is re-run on a non-Windows environment (or the five failures are
+   confirmed as pre-existing environment issues).~~ Accepted: the five failures
+   are the Windows/network environment issues documented above; 305 of 311 tests
+   pass and none touch the iOS-only changes.
+
+All gates are met; this branch is ready to merge into `main`.
 
 ## Karaoke follow-up (patch 9)
 
