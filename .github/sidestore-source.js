@@ -1,12 +1,14 @@
 // Writes sidestore.json (AltStore/SideStore source format) next to Muriel.ipa in CI.
-// The version must match the built app (MARKETING_VERSION = <major>.<minor>.<run number>) so
-// SideStore can tell when an update is available.
+// The version must match the built app (MARKETING_VERSION) so SideStore can tell when an
+// update is available. TAG is either "ios-latest" or a versioned tag such as "v1.3.10".
 const fs = require('fs');
 
 const { RUN, REPO, SHA } = process.env;
+const tag = process.env.TAG || 'ios-latest';
+const ipaName = process.env.IPA_NAME || 'Muriel.ipa';
 const base = require('../package.json').version.split('.').slice(0, 2).join('.');
-const version = `${base}.${RUN}`;
-const ipa = `https://github.com/${REPO}/releases/download/ios-latest/Muriel.ipa`;
+const version = process.env.VERSION || `${base}.${RUN}`;
+const ipa = `https://github.com/${REPO}/releases/download/${tag}/${ipaName}`;
 const icon = `https://raw.githubusercontent.com/${REPO}/${SHA}/assets/icon-ios.png`;
 const now = new Date().toISOString();
 const size = fs.statSync('Muriel.ipa').size;

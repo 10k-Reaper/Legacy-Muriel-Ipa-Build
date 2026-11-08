@@ -1,5 +1,5 @@
 diff --git a/package.json b/package.json
-index 1e6747b..8b92539 100644
+index 1e6747b..9c85f5c 100644
 --- a/package.json
 +++ b/package.json
 @@ -8,6 +8,7 @@
@@ -10,7 +10,15 @@ index 1e6747b..8b92539 100644
      "dist": "electron-builder",
      "release": "npm version patch && git push --follow-tags",
      "release:minor": "npm version minor && git push --follow-tags",
-@@ -132,5 +133,10 @@
+@@ -18,7 +19,6 @@
+   "license": "MIT",
+   "description": "Muriel - a lightweight music player.",
+   "devDependencies": {
+-    "@capacitor/android": "^8.5.3",
+     "@capacitor/app": "^8.1.2",
+     "@capacitor/cli": "^8.5.3",
+     "@capacitor/core": "^8.5.3",
+@@ -132,5 +132,10 @@
          "releaseType": "release"
        }
      ]

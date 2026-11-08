@@ -75,11 +75,15 @@ jobs:
           mkdir -p ipa/Payload
           cp -R build/Build/Products/Release-iphoneos/App.app ipa/Payload/
           (cd ipa && /usr/bin/zip -qry ../Muriel-iOS15.ipa Payload)
+          shasum -a 256 Muriel-iOS15.ipa > Muriel-iOS15.ipa.sha256
+          cat Muriel-iOS15.ipa.sha256
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: Muriel-iOS15-IPA
-          path: Muriel-iOS15.ipa
+          path: |
+            Muriel-iOS15.ipa
+            Muriel-iOS15.ipa.sha256
           if-no-files-found: error
           retention-days: 14

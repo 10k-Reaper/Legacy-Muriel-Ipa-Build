@@ -14,13 +14,15 @@ Apply with `git apply --3way` from the repository root, in this order:
 3. `0003-guard-abortsignal-timeout.patch` — feature-check `AbortSignal.timeout`
    in the Google library import.
 4. `0004-preserve-allowscripts-and-check-script.patch` — keep the local
-   `allowScripts` policy and add `npm run check:ios15`.
+   `allowScripts` policy, add `npm run check:ios15`, and drop the unused
+   `@capacitor/android` dev dependency.
 5. `0005-add-ios15-compat-checker.patch` — add
    `tools/check-ios15-compat.mjs`.
-6. `0006-gate-ios-workflows.patch` — add the manual iOS 15 IPA workflow and gate
-   the release workflow.
+6. `0006-gate-ios-workflows.patch` — add the manual iOS 15 IPA workflow and add
+   the iOS 15 compatibility/version checks to the rolling iOS workflow.
 7. `0007-document-ios15-port.patch` — add `LEGACY_IOS.md` and replace the
-   upstream README with the fork's iOS 15 README.
+   upstream README with the fork's iOS 15 README (downloads, TrollStore and
+   Sideloadly/AltStore/SideStore instructions, and release details).
 8. `0008-pin-patch-line-endings.patch` — add `.gitattributes` so the series
    stays LF-only on Windows.
 9. `0009-fix-karaoke-notch-volume-and-slider-drag.patch` — keep the fullscreen
@@ -52,6 +54,12 @@ Apply with `git apply --3way` from the repository root, in this order:
    "Like all" heart into an add/remove toggle with a confirmation dialog. The
    eighth device pass fills the gap left by a fast fling with Muriel-styled ghost
    song rows until the real rows render.
+10. `0010-publish-ios15-releases-and-remove-unused-platforms.patch` — turn the
+    tag-triggered release workflow into a versioned iOS 15 IPA release (with a
+    SHA-256 checksum and SideStore source), publish checksums in the rolling
+    iOS release, and remove the Android project, the Android/Windows/Rust CI
+    workflows and the Nix files. The shared desktop source and Electron dev
+    dependencies stay so tests and upstream syncs keep working.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:
@@ -64,7 +72,7 @@ git archive HEAD patches/ios15 | tar -x -C "$TEMP"
 git switch -c sync/upstream-<commit> upstream/main
 
 # 3. apply the copied series
-for patch in "$TEMP"/patches/ios15/000*.patch; do
+for patch in "$TEMP"/patches/ios15/[0-9]*.patch; do
   git apply --3way "$patch"
 done
 
@@ -86,5 +94,8 @@ repository.
   new iOS 16+ API or Safari 15.4+ CSS feature enters the upstream code.
 - Patch 9 adds a native plugin, so `npx cap sync ios` must run after the patches
   are applied and before the Xcode build.
+- Patch 10 removes files (including binary Android assets), so use the
+  `git apply --3way` loop above. The loop matches `[0-9]*.patch`, which includes
+  `0010` and any later patch.
 - Do not merge the sync branch into `main` until the macOS GitHub Actions build
   and an iOS 15 device smoke test pass.

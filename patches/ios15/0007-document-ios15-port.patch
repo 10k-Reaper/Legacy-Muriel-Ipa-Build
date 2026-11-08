@@ -1,13 +1,36 @@
 diff --git a/LEGACY_IOS.md b/LEGACY_IOS.md
 new file mode 100644
-index 0000000..1fbf46d
+index 0000000..5156ede
 --- /dev/null
 +++ b/LEGACY_IOS.md
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,165 @@
 +# iOS 15 compatibility port
 +
 +This repository keeps Muriel playable on **iOS 15.0+** while tracking the upstream
 +[`cloverscripts/riff-muriel`](https://github.com/cloverscripts/riff-muriel) source.
++
++## Downloads and installation
++
++Users do not need to build the app. The
++[Releases page](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/releases) contains
++ready-to-install builds:
++
++- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one has
++  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++- **`ios-latest`** is a rolling pre-release that follows `main` between versioned builds.
++
++The IPA is unsigned and supports iOS 15.0 and later. It can be installed with:
++
++- **TrollStore** — installs the unsigned IPA permanently on supported firmware/devices,
++  with no Apple ID and no 7-day expiration. TrollStore only runs on the iOS versions listed
++  in its compatibility chart, so check that first.
++- **Sideloadly** — sign the IPA with your Apple ID from a computer.
++- **AltStore / SideStore** — sign with your Apple ID and refresh every 7 days on a free
++  account. Add the release's `sidestore.json` as a source, or open the IPA directly.
++
++Verify a download with `shasum -a 256 Muriel.ipa` (macOS/Linux) or
++`certutil -hashfile Muriel.ipa SHA256` (Windows) and compare it with the published
++checksum.
 +
 +## Upstream lineage
 +
@@ -46,14 +69,32 @@ index 0000000..1fbf46d
 +1. Pin the app/project deployment target to 15.0 while leaving the widget at 16.2.
 +2. Build the mobile web bundle for Safari 15.
 +3. Guard `AbortSignal.timeout` in the Google library import.
-+4. Preserve the local `allowScripts` npm policy and add the `check:ios15` script.
++4. Preserve the local `allowScripts` npm policy, add the `check:ios15` script, and drop
++   the unused `@capacitor/android` dev dependency.
 +5. Add `tools/check-ios15-compat.mjs`, a cross-platform static compatibility gate.
 +6. Add and harden the iOS 15 IPA workflows.
-+7. Document the port and the sync procedure.
++7. Document the port and the sync procedure, and replace the upstream README with this
++   fork's README.
++8. Pin the patch series to LF line endings so `git apply` works on Windows.
++9. Carry the iOS 15 UI and playback fixes: karaoke layout and visualizer, system volume,
++   sliders, Queue/Now Playing/Favorites/playlist layout, virtualised row updates, reusable
++   row elements, and ghost rows for fast flings.
++10. Publish versioned IPA releases with checksums, and remove the unused Android project,
++    desktop-only CI workflows and Nix files.
 +
 +## Building an IPA with GitHub Actions
 +
-+`.github/workflows/build-ios15-ipa.yml` is a manual GitHub-hosted macOS build:
++Three workflows produce the same unsigned IPA:
++
++- `.github/workflows/build-ios15-ipa.yml` is a manual branch build. It uploads
++  `Muriel-iOS15.ipa` as the `Muriel-iOS15-IPA` artifact.
++- `.github/workflows/ios.yml` builds on every push to `main` and publishes the rolling
++  `ios-latest` release (`Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`).
++- `.github/workflows/release.yml` builds when a `v*` tag is pushed (or when started
++  manually with a version) and publishes `Muriel.ipa`, `Muriel.ipa.sha256` and
++  `sidestore.json` to that versioned release.
++
++Every workflow runs the same checks:
 +
 +1. Install dependencies and run the iOS 15 static gate.
 +2. Build `www/` with `node mobile/build.mjs`.
@@ -62,10 +103,27 @@ index 0000000..1fbf46d
 +5. Compile unsigned with `xcodebuild`.
 +6. Verify the app's `MinimumOSVersion` is `15.0`, the widget's is `16.2`, and the app
 +   binary's `LC_BUILD_VERSION minos` is `15.0`.
-+7. Upload `Muriel-iOS15.ipa` as the `Muriel-iOS15-IPA` artifact.
++7. Package the app as `Muriel.ipa` and write its SHA-256 checksum.
 +
-+The upstream-style `.github/workflows/ios.yml` release workflow runs the same checks, so a
-+future sync cannot silently publish an iOS 16.2-only build.
++The rolling and versioned workflows run the same checks, so a future sync cannot silently
++publish an iOS 16.2-only build.
++
++### Publishing a versioned release
++
++1. Set the release version in `package.json` (for example `1.3.10`) and merge the branch
++   into `main` after the build and device checks pass.
++2. Create and push the matching tag:
++
++   ```bash
++   git tag v1.3.10
++   git push origin v1.3.10
++   ```
++
++3. The **Release** workflow builds the IPA for that tag and attaches `Muriel.ipa`,
++   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release.
++
++The same workflow can be started from the Actions tab with a version instead of pushing a
++tag; it creates the tag itself.
 +
 +## Verifying locally
 +
@@ -88,7 +146,7 @@ index 0000000..1fbf46d
 +git archive HEAD patches/ios15 | tar -x -C "$TEMP"
 +
 +git switch -c sync/upstream-<commit> upstream/main
-+for patch in "$TEMP"/patches/ios15/000*.patch; do
++for patch in "$TEMP"/patches/ios15/[0-9]*.patch; do
 +  git apply --3way "$patch"
 +done
 +
@@ -101,27 +159,29 @@ index 0000000..1fbf46d
 +Then run the GitHub Actions **Build iOS 15 IPA** workflow. Only merge the sync branch into
 +`main` after the macOS build and an iOS 15 device smoke test pass.
 +
-+## Remaining validation
++## Validation status
 +
-+This working environment has no Xcode or Apple iOS SDK. The following still require a Mac:
++The macOS IPA build, the iOS 15 version assertions and the iPhone XR / iOS 15.4.1 device
++passes are recorded in [`SYNC_REPORT.md`](SYNC_REPORT.md). This working environment has no
++Xcode or Apple iOS SDK, so the following still require a Mac:
 +
 +- `xcodebuild` compilation against the iOS SDK.
 +- Verification of the built app/widget plists and `LC_BUILD_VERSION`.
 +- Device testing on iOS 15.0-15.3: background audio, lock-screen controls, interruption
 +  resume, downloads, deep links, and settings layout around `:has()` rules.
 diff --git a/README.md b/README.md
-index d34b6ef..93867de 100644
+index d34b6ef..bcf9a54 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,55 +1,114 @@
+@@ -1,55 +1,156 @@
 -# Muriel
 +# Muriel Legacy iOS
  
 -A lightweight desktop music player for Windows, Linux and macOS. Stream from YouTube, YouTube Music and SoundCloud, download for offline listening, and keep a local library — no account, no subscription.
 +An iOS 15 build of [Muriel](https://github.com/cloverscripts/riff-muriel), the lightweight
 +music player by cloverscripts. Upstream Muriel now targets iOS 16.2; this fork keeps the
-+same player working on **iPhone and iPad with iOS 15.0 and later**, and still builds the
-+original desktop app for Windows, Linux and macOS.
++same player working on **iPhone and iPad with iOS 15.0 and later**. The shared desktop
++Muriel app still builds from this source for Windows, Linux and macOS.
  
 -Muriel is based on [Riff](https://github.com/rootscripts/riff) by rootscripts (MIT).
 +This is an independent, non-commercial fork. It is not affiliated with, endorsed by, or
@@ -130,9 +190,62 @@ index d34b6ef..93867de 100644
 -> Muriel is an independent, non-commercial open-source project and is not affiliated with YouTube, Google,
 -> SoundCloud, Spotify or Apple. It hosts no music. Use it for private listening and only download music you
 -> have the right to. See [LEGAL.md](LEGAL.md) (also for rights holders).
-+## What this fork changes
++## Download the IPA (no build needed)
  
 -## Features
++Ready-to-install IPAs are published under
++[**Releases**](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/releases), so you do
++not need a Mac, Xcode or a GitHub account to use the app.
+ 
+-- **Streaming & downloads** — YouTube, YouTube Music and SoundCloud via yt-dlp and ffmpeg (installed automatically on first run)
+-- **Local library** — reads tags and album art, folders and playlists, original files stay untouched
+-- **Lyrics** — online synced lyrics, LRC files, manual timing, fullscreen karaoke
+-- **Audio** — EQ, presets, real-time speed, reverb, and a small editor for trimming and exporting clips
+-- **Compact layout** — slim navigation rail, slide-over drawer for now playing, lyrics and the queue
+-- **Custom background** — image, GIF or video, with optional glass blur on the interface; pauses while Muriel is hidden
+-- **Performance settings** — lightweight thumbnails, blur on/off, visualizer frame-rate cap, memory trimming in the background, hardware acceleration toggle
++- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one
++  contains `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++- **`ios-latest`** is a rolling pre-release that follows the `main` branch.
++- All builds are unsigned and support **iOS 15.0 or later**.
+ 
+-## Getting started
++## Install on iPhone or iPad
+ 
+-Requires Node.js 18 or newer.
++Choose the method that matches your device:
++
++- **TrollStore** — no Apple ID and no 7-day expiry. On iOS versions and devices supported
++  by TrollStore, install TrollStore first, then open `Muriel.ipa` with it. TrollStore
++  installs the unsigned IPA permanently. Support depends on your iOS version, so check the
++  [TrollStore compatibility chart](https://github.com/opa334/TrollStore#installation)
++  before trying.
++- **Sideloadly** — connect the device to a computer, drag `Muriel.ipa` into Sideloadly and
++  sign it with your Apple ID.
++- **AltStore / SideStore** — add the release's `sidestore.json` asset as a source, or open
++  the IPA in AltStore/SideStore.
++
++Sideloadly, AltStore and SideStore sign the app with your Apple ID. Free Apple IDs need the
++app re-signed every 7 days; paid developer accounts last longer. TrollStore does not use an
++Apple ID and does not expire.
++
++To check a download, compare it with the published checksum:
+ 
+ ```bash
+-git clone https://github.com/cloverscripts/riff-muriel.git
+-cd riff-muriel
+-npm install
+-npm start
++shasum -a 256 Muriel.ipa                 # macOS / Linux
++certutil -hashfile Muriel.ipa SHA256     # Windows
+ ```
+ 
+-## Building
++The current build has been device-tested on an **iPhone XR running iOS 15.4.1**. See
++[`SYNC_REPORT.md`](SYNC_REPORT.md) for the build and device-test history.
++
++## What this fork changes
++
 +- The iOS app and Xcode project target **iOS 15.0**. The `MurielWidgets` Live Activity
 +  extension stays on **iOS 16.2** because Live Activities do not exist on iOS 15; iOS 15
 +  devices keep the normal lock-screen media controls instead.
@@ -144,65 +257,54 @@ index d34b6ef..93867de 100644
 +- A reusable patch series in [`patches/ios15`](patches/ios15/README.md) carries the delta
 +  over upstream, so future upstream releases can be synced again. See
 +  [`LEGACY_IOS.md`](LEGACY_IOS.md) for the full compatibility policy and sync procedure.
- 
--- **Streaming & downloads** — YouTube, YouTube Music and SoundCloud via yt-dlp and ffmpeg (installed automatically on first run)
--- **Local library** — reads tags and album art, folders and playlists, original files stay untouched
--- **Lyrics** — online synced lyrics, LRC files, manual timing, fullscreen karaoke
--- **Audio** — EQ, presets, real-time speed, reverb, and a small editor for trimming and exporting clips
--- **Compact layout** — slim navigation rail, slide-over drawer for now playing, lyrics and the queue
--- **Custom background** — image, GIF or video, with optional glass blur on the interface; pauses while Muriel is hidden
--- **Performance settings** — lightweight thumbnails, blur on/off, visualizer frame-rate cap, memory trimming in the background, hardware acceleration toggle
++
 +The player itself is still Muriel: streaming from YouTube, YouTube Music and SoundCloud,
 +offline downloads, a local library, synced lyrics and karaoke, EQ and playback effects,
 +playlists, favorites, queue management, themes, and the desktop interface.
- 
--## Getting started
-+## Installing the iOS IPA
- 
--Requires Node.js 18 or newer.
-+The repository builds an **unsigned** IPA on GitHub's macOS runners:
 +
-+1. Open the [Build iOS 15 IPA workflow](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/actions/workflows/build-ios15-ipa.yml).
-+2. Choose **Run workflow** for the branch you want to build.
-+3. Download the `Muriel-iOS15-IPA` artifact when the run finishes.
++## Building the IPA yourself (maintainers)
 +
-+The workflow verifies that the app reports minimum iOS `15.0`, the widget extension
-+reports `16.2`, and the app binary's `LC_BUILD_VERSION minos` is `15.0` before uploading
-+the IPA. The IPA is not signed, so install it with AltStore, Sideloadly, TrollStore, or
-+another tool that signs apps with your own Apple ID/developer certificate.
++The download builds are produced by GitHub Actions on macOS:
 +
-+The current build has been device-tested on an **iPhone XR running iOS 15.4.1**. See
-+[`SYNC_REPORT.md`](SYNC_REPORT.md) for the build and device-test history.
++- [`.github/workflows/build-ios15-ipa.yml`](.github/workflows/build-ios15-ipa.yml) builds a
++  branch by hand and uploads the `Muriel-iOS15-IPA` workflow artifact.
++- [`.github/workflows/ios.yml`](.github/workflows/ios.yml) publishes the rolling
++  `ios-latest` release from `main`.
++- [`.github/workflows/release.yml`](.github/workflows/release.yml) builds a versioned
++  release when a `v*` tag is pushed (or started manually with a version) and uploads
++  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
++
++Every path verifies that the app reports minimum iOS `15.0`, the widget extension reports
++`16.2`, and the app binary's `LC_BUILD_VERSION minos` is `15.0` before publishing. The IPA
++is unsigned, so install it with TrollStore, Sideloadly, AltStore/SideStore, or another tool
++that signs apps with your own Apple ID/developer certificate.
 +
 +## Building locally
 +
 +Requires Node.js 18 or newer. Building the IPA additionally requires macOS with Xcode.
  
  ```bash
--git clone https://github.com/cloverscripts/riff-muriel.git
--cd riff-muriel
--npm install
--npm start
+-npm run dist
 +npm ci
 +npm run check:ios15
 +node mobile/build.mjs
 +npm test
  ```
  
--## Building
+-Installers land in `dist/`. Builds are unsigned: on macOS, right-click Muriel in Applications and choose Open; if macOS says the app is damaged, run `xattr -cr /Applications/Muriel.app`.
 +For the native app:
- 
- ```bash
--npm run dist
++
++```bash
 +npx cap sync ios
 +npx cap open ios      # or build with xcodebuild
- ```
- 
--Installers land in `dist/`. Builds are unsigned: on macOS, right-click Muriel in Applications and choose Open; if macOS says the app is damaged, run `xattr -cr /Applications/Muriel.app`.
-+The static compatibility gate, web bundle and Node test suite also run on Windows and
-+Linux. The five test failures currently seen on Windows are environment/network issues
-+(Electron is not installed and several tests use POSIX shell scripts). They are documented
-+in [`SYNC_REPORT.md`](SYNC_REPORT.md).
++```
++
++The desktop app is unaffected by the iOS port: `npm start` runs it and `npm run dist`
++builds installers. Upstream publishes the desktop downloads. The static compatibility
++gate, web bundle and Node test suite also run on Windows and Linux. The five test failures
++currently seen on Windows are environment/network issues (Electron is not installed and
++several tests use POSIX shell scripts). They are documented in
++[`SYNC_REPORT.md`](SYNC_REPORT.md).
 +
 +## Known iOS 15 limitations
 +
@@ -223,7 +325,7 @@ index d34b6ef..93867de 100644
 +git fetch upstream --tags
 +git archive HEAD patches/ios15 | tar -x -C "$TEMP"
 +git switch -c sync/upstream-<commit> upstream/main
-+for patch in "$TEMP"/patches/ios15/000*.patch; do
++for patch in "$TEMP"/patches/ios15/[0-9]*.patch; do
 +  git apply --3way "$patch"
 +done
 +npm ci

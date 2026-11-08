@@ -74,7 +74,7 @@ may look different. This is visual degradation, not a crash path.
 
 ## Downstream changes
 
-Nine patches were generated from `2df82f5` to the sync branch and committed
+Ten patches were generated from `2df82f5` to the sync branch and committed
 under `patches/ios15/`:
 
 1. `0001-pin-ios15-deployment-target.patch`
@@ -86,6 +86,7 @@ under `patches/ios15/`:
 7. `0007-document-ios15-port.patch`
 8. `0008-pin-patch-line-endings.patch`
 9. `0009-fix-karaoke-notch-volume-and-slider-drag.patch` (post-device-test)
+10. `0010-publish-ios15-releases-and-remove-unused-platforms.patch`
 
 `tools/check-ios15-compat.mjs` is a cross-platform gate that verifies the Xcode
 deployment targets, SPM platform, Safari target, mobile script copy list,
@@ -99,9 +100,10 @@ workflows' binary minimum checks. It runs before and after `npx cap sync ios`.
 - `npm run check:ios15` — pass with 4 expected warnings.
 - `node mobile/build.mjs` — `www/` built, including `download-batch.js`,
   `now-playing.js` and `track-match.js`.
-- Patch series — all nine patches apply cleanly to a fresh `2df82f5` worktree;
+- Patch series — all ten patches apply cleanly to a fresh `2df82f5` worktree;
   every source, workflow and documentation file then matches the sync branch
-  (the patch files and this report are intentionally outside the series).
+  (the patch files and this report are intentionally outside the series). The
+  binary Android assets in patch 10 are carried with `git diff --binary`.
 
 ### Test suite
 
@@ -148,7 +150,9 @@ Merge `sync/upstream-2df82f5` into `main` only after:
    are the Windows/network environment issues documented above; 305 of 311 tests
    pass and none touch the iOS-only changes.
 
-All gates are met; this branch is ready to merge into `main`.
+All gates for the 1.3.10 sync were met, and that branch was merged into `main` as
+`7d7648d`. The later ghost-row, README and patch-10 work is tracked below and needs
+its own macOS build and iPhone pass before it is merged.
 
 ## Karaoke follow-up (patch 9)
 
@@ -266,3 +270,36 @@ patch 7 carries it so a future upstream sync keeps the correct GitHub page.
 
 `node --check app.js`, `node --check mobile/mobile-ui.js`, `node mobile/build.mjs`
 and `npm run check:ios15` pass with the same four expected warnings.
+
+## Release and cleanup pass (patch 10)
+
+The release flow now publishes ready-to-install builds, so users do not need to
+build the app:
+
+| Workflow | Trigger | Output |
+| --- | --- | --- |
+| `release.yml` | `v*` tag or manual version | Versioned GitHub release with `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`. |
+| `ios.yml` | push to `main` | Rolling `ios-latest` release with the same three assets. |
+| `build-ios15-ipa.yml` | manual branch build | `Muriel-iOS15-IPA` artifact containing the IPA and checksum. |
+
+`.github/sidestore-source.js` now accepts `TAG`, `IPA_NAME` and `VERSION`, so the
+SideStore/AltStore source points at the versioned asset instead of assuming
+`ios-latest`. Release notes mention TrollStore alongside Sideloadly, AltStore and
+SideStore, and explain that the IPA is unsigned.
+
+Platform cleanup, chosen so the shared source and upstream sync stay intact:
+
+- Removed `android/`, `.github/workflows/android.yml`,
+  `.github/workflows/windows.yml`, `.github/workflows/rust.yml`, `flake.nix`,
+  `flake.lock` and `NIX.md`.
+- Removed the unused `@capacitor/android` dev dependency.
+- Kept the shared desktop source, Electron dev dependencies, `site/` and
+  `pages.yml`; tests and the mobile bundle use the same files, and keeping them
+  avoids unnecessary churn during upstream merges.
+- The patch loop now uses `patches/ios15/[0-9]*.patch`, so patch `0010` is picked
+  up as well.
+
+`node --check .github/sidestore-source.js`, `node mobile/build.mjs`,
+`npm run check:ios15`, and the full patch-series replay against `2df82f5` pass.
+The macOS IPA build and an iPhone fast-scroll check are still required before
+this branch is merged into `main`.

@@ -2,11 +2,50 @@
 
 An iOS 15 build of [Muriel](https://github.com/cloverscripts/riff-muriel), the lightweight
 music player by cloverscripts. Upstream Muriel now targets iOS 16.2; this fork keeps the
-same player working on **iPhone and iPad with iOS 15.0 and later**, and still builds the
-original desktop app for Windows, Linux and macOS.
+same player working on **iPhone and iPad with iOS 15.0 and later**. The shared desktop
+Muriel app still builds from this source for Windows, Linux and macOS.
 
 This is an independent, non-commercial fork. It is not affiliated with, endorsed by, or
 supported by the upstream Muriel project.
+
+## Download the IPA (no build needed)
+
+Ready-to-install IPAs are published under
+[**Releases**](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/releases), so you do
+not need a Mac, Xcode or a GitHub account to use the app.
+
+- **Versioned releases** (`v1.3.10`, `v1.3.11`, ...) are the stable builds. Each one
+  contains `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
+- **`ios-latest`** is a rolling pre-release that follows the `main` branch.
+- All builds are unsigned and support **iOS 15.0 or later**.
+
+## Install on iPhone or iPad
+
+Choose the method that matches your device:
+
+- **TrollStore** — no Apple ID and no 7-day expiry. On iOS versions and devices supported
+  by TrollStore, install TrollStore first, then open `Muriel.ipa` with it. TrollStore
+  installs the unsigned IPA permanently. Support depends on your iOS version, so check the
+  [TrollStore compatibility chart](https://github.com/opa334/TrollStore#installation)
+  before trying.
+- **Sideloadly** — connect the device to a computer, drag `Muriel.ipa` into Sideloadly and
+  sign it with your Apple ID.
+- **AltStore / SideStore** — add the release's `sidestore.json` asset as a source, or open
+  the IPA in AltStore/SideStore.
+
+Sideloadly, AltStore and SideStore sign the app with your Apple ID. Free Apple IDs need the
+app re-signed every 7 days; paid developer accounts last longer. TrollStore does not use an
+Apple ID and does not expire.
+
+To check a download, compare it with the published checksum:
+
+```bash
+shasum -a 256 Muriel.ipa                 # macOS / Linux
+certutil -hashfile Muriel.ipa SHA256     # Windows
+```
+
+The current build has been device-tested on an **iPhone XR running iOS 15.4.1**. See
+[`SYNC_REPORT.md`](SYNC_REPORT.md) for the build and device-test history.
 
 ## What this fork changes
 
@@ -26,21 +65,22 @@ The player itself is still Muriel: streaming from YouTube, YouTube Music and Sou
 offline downloads, a local library, synced lyrics and karaoke, EQ and playback effects,
 playlists, favorites, queue management, themes, and the desktop interface.
 
-## Installing the iOS IPA
+## Building the IPA yourself (maintainers)
 
-The repository builds an **unsigned** IPA on GitHub's macOS runners:
+The download builds are produced by GitHub Actions on macOS:
 
-1. Open the [Build iOS 15 IPA workflow](https://github.com/10k-Reaper/Legacy-Muriel-Ipa-Build/actions/workflows/build-ios15-ipa.yml).
-2. Choose **Run workflow** for the branch you want to build.
-3. Download the `Muriel-iOS15-IPA` artifact when the run finishes.
+- [`.github/workflows/build-ios15-ipa.yml`](.github/workflows/build-ios15-ipa.yml) builds a
+  branch by hand and uploads the `Muriel-iOS15-IPA` workflow artifact.
+- [`.github/workflows/ios.yml`](.github/workflows/ios.yml) publishes the rolling
+  `ios-latest` release from `main`.
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) builds a versioned
+  release when a `v*` tag is pushed (or started manually with a version) and uploads
+  `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`.
 
-The workflow verifies that the app reports minimum iOS `15.0`, the widget extension
-reports `16.2`, and the app binary's `LC_BUILD_VERSION minos` is `15.0` before uploading
-the IPA. The IPA is not signed, so install it with AltStore, Sideloadly, TrollStore, or
-another tool that signs apps with your own Apple ID/developer certificate.
-
-The current build has been device-tested on an **iPhone XR running iOS 15.4.1**. See
-[`SYNC_REPORT.md`](SYNC_REPORT.md) for the build and device-test history.
+Every path verifies that the app reports minimum iOS `15.0`, the widget extension reports
+`16.2`, and the app binary's `LC_BUILD_VERSION minos` is `15.0` before publishing. The IPA
+is unsigned, so install it with TrollStore, Sideloadly, AltStore/SideStore, or another tool
+that signs apps with your own Apple ID/developer certificate.
 
 ## Building locally
 
@@ -60,10 +100,12 @@ npx cap sync ios
 npx cap open ios      # or build with xcodebuild
 ```
 
-The static compatibility gate, web bundle and Node test suite also run on Windows and
-Linux. The five test failures currently seen on Windows are environment/network issues
-(Electron is not installed and several tests use POSIX shell scripts). They are documented
-in [`SYNC_REPORT.md`](SYNC_REPORT.md).
+The desktop app is unaffected by the iOS port: `npm start` runs it and `npm run dist`
+builds installers. Upstream publishes the desktop downloads. The static compatibility
+gate, web bundle and Node test suite also run on Windows and Linux. The five test failures
+currently seen on Windows are environment/network issues (Electron is not installed and
+several tests use POSIX shell scripts). They are documented in
+[`SYNC_REPORT.md`](SYNC_REPORT.md).
 
 ## Known iOS 15 limitations
 
@@ -84,7 +126,7 @@ version:
 git fetch upstream --tags
 git archive HEAD patches/ios15 | tar -x -C "$TEMP"
 git switch -c sync/upstream-<commit> upstream/main
-for patch in "$TEMP"/patches/ios15/000*.patch; do
+for patch in "$TEMP"/patches/ios15/[0-9]*.patch; do
   git apply --3way "$patch"
 done
 npm ci
