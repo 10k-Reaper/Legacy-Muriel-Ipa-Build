@@ -101,23 +101,29 @@ jobs:
           IPA_NAME: Muriel.ipa
         run: node .github/sidestore-source.js
 
-      - name: Create the release if needed
+      - name: Render the release notes
+        run: sed "s/__VERSION__/$VERSION/g" .github/release-notes-ios.md > release-notes-ios.md
+
+      - name: Create or update the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; adding the IPA."
+            echo "Release $TAG already exists; updating its notes."
+            gh release edit "$TAG" \
+              --title "Muriel Legacy iOS ${TAG#v}" \
+              --notes-file release-notes-ios.md
           elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "Creating release $TAG for the existing tag."
             gh release create "$TAG" \
               --title "Muriel Legacy iOS ${TAG#v}" \
-              --notes "$(printf 'Muriel Legacy iOS %s.\n\nUnsigned IPA for iOS 15.0 and later. Install it with TrollStore on supported devices/firmware (no Apple ID, no 7-day expiry), or sign it with Sideloadly, AltStore or SideStore using your Apple ID. Free Apple IDs need re-signing every 7 days.\n\nThe SHA-256 of Muriel.ipa is in Muriel.ipa.sha256. See the repository README for details.' "${TAG#v}")"
+              --notes-file release-notes-ios.md
           else
             echo "Creating tag $TAG and its release."
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
               --title "Muriel Legacy iOS ${TAG#v}" \
-              --notes "$(printf 'Muriel Legacy iOS %s.\n\nUnsigned IPA for iOS 15.0 and later. Install it with TrollStore on supported devices/firmware (no Apple ID, no 7-day expiry), or sign it with Sideloadly, AltStore or SideStore using your Apple ID. Free Apple IDs need re-signing every 7 days.\n\nThe SHA-256 of Muriel.ipa is in Muriel.ipa.sha256. See the repository README for details.' "${TAG#v}")"
+              --notes-file release-notes-ios.md
           fi
 
       - name: Upload the IPA, checksum and SideStore source

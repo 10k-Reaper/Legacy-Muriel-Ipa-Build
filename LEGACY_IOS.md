@@ -114,7 +114,9 @@ publish an iOS 16.2-only build.
    ```
 
 3. The **Release** workflow builds the IPA for that tag and attaches `Muriel.ipa`,
-   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release.
+   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release. Its release notes
+   come from `.github/release-notes-ios.md`, with `__VERSION__` replaced by the tag
+   version.
 
 The same workflow can be started from the Actions tab with a version instead of pushing a
 tag; it creates the tag itself.

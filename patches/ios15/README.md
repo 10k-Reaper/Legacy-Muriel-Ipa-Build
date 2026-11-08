@@ -56,8 +56,9 @@ Apply with `git apply --3way` from the repository root, in this order:
    song rows until the real rows render.
 10. `0010-publish-ios15-releases-and-remove-unused-platforms.patch` — turn the
     tag-triggered release workflow into a versioned iOS 15 IPA release (with a
-    SHA-256 checksum and SideStore source), publish checksums in the rolling
-    iOS release, and remove the Android project, the Android/Windows/Rust CI
+    SHA-256 checksum, SideStore source and notes rendered from
+    `.github/release-notes-ios.md`), publish checksums in the rolling iOS
+    release, and remove the Android project, the Android/Windows/Rust CI
     workflows and the Nix files. The shared desktop source and Electron dev
     dependencies stay so tests and upstream syncs keep working.
 

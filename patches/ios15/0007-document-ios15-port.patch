@@ -1,9 +1,9 @@
 diff --git a/LEGACY_IOS.md b/LEGACY_IOS.md
 new file mode 100644
-index 0000000..5156ede
+index 0000000..4ae53ae
 --- /dev/null
 +++ b/LEGACY_IOS.md
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,167 @@
 +# iOS 15 compatibility port
 +
 +This repository keeps Muriel playable on **iOS 15.0+** while tracking the upstream
@@ -120,7 +120,9 @@ index 0000000..5156ede
 +   ```
 +
 +3. The **Release** workflow builds the IPA for that tag and attaches `Muriel.ipa`,
-+   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release.
++   `Muriel.ipa.sha256` and `sidestore.json` to the `v1.3.10` release. Its release notes
++   come from `.github/release-notes-ios.md`, with `__VERSION__` replaced by the tag
++   version.
 +
 +The same workflow can be started from the Actions tab with a version instead of pushing a
 +tag; it creates the tag itself.

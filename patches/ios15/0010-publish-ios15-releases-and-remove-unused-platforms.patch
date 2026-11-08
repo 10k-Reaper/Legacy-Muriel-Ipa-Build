@@ -1,3 +1,54 @@
+diff --git a/.github/release-notes-ios.md b/.github/release-notes-ios.md
+new file mode 100644
+index 0000000..daa6f93
+--- /dev/null
++++ b/.github/release-notes-ios.md
+@@ -0,0 +1,45 @@
++Unsigned iOS 15 build of Muriel __VERSION__.
++
++### Download
++
++- **`Muriel.ipa`** — iPhone and iPad, iOS 15.0 or later
++- **`Muriel.ipa.sha256`** — SHA-256 checksum
++- **`sidestore.json`** — AltStore / SideStore source
++
++### Install
++
++- **TrollStore** — open `Muriel.ipa` in TrollStore on supported firmware/devices. No Apple ID, no 7-day expiry.
++- **Sideloadly** — drag `Muriel.ipa` into Sideloadly and sign it with your Apple ID.
++- **AltStore / SideStore** — add `sidestore.json` as a source, or open the IPA directly.
++
++Sideloadly, AltStore and SideStore sign the app with your Apple ID. Free Apple IDs need re-signing every 7 days. TrollStore does not use an Apple ID and does not expire.
++
++### What's in this build
++
++- Muriel __VERSION__ with the app and Xcode project targeting **iOS 15.0+**; the widget extension stays at iOS 16.2.
++- Mobile bundle built for **Safari 15**, with fallbacks for newer APIs.
++- Karaoke fixes: notch-safe layout, bottom seek bar, iOS system volume, sliders draggable from anywhere, Word-lyrics fallback and a `roundRect` polyfill for the visualizer.
++- Queue, Now Playing and Favorites fixes: no sideways scrolling, sticky Favorites toolbar, compact playlist header and an add/remove **Like all** toggle.
++- Virtualised track lists reuse their rows, so covers no longer blink while scrolling.
++- Muriel-styled ghost rows fill the viewport during fast flings until the real rows load.
++- Ready-made IPAs are published here, so users no longer need to build the app.
++
++### Verify the download
++
++```bash
++shasum -a 256 Muriel.ipa                 # macOS / Linux
++certutil -hashfile Muriel.ipa SHA256     # Windows
++```
++
++Compare the result with `Muriel.ipa.sha256`.
++
++### Known limitations
++
++- `:has()` and `@property` CSS are unavailable on iOS 15.0–15.3; affected styling degrades gracefully.
++- Live Activities and Dynamic Island are unavailable on iOS 15.
++- Lock-screen elapsed/duration follows the upstream Now Playing behaviour tracked in cloverscripts/riff-muriel#26.
++- This IPA is unsigned. Device testing was done on an iPhone XR running iOS 15.4.1.
++
++### Credits
++
++Muriel is by [cloverscripts](https://github.com/cloverscripts), based on [Riff](https://github.com/rootscripts/riff) by rootscripts. Both are MIT-licensed. This is an independent, non-commercial iOS 15 fork and is not affiliated with or supported by the upstream project.
 diff --git a/.github/sidestore-source.js b/.github/sidestore-source.js
 index c8d99ab..e69c59f 100644
 --- a/.github/sidestore-source.js
@@ -116,7 +167,7 @@ index 37913cd..0000000
 -            --title "Muriel for Android (latest build)" \
 -            --notes "Muriel $ver. Build of ${GITHUB_SHA::7} (run ${{ github.run_number }}). Download Muriel.apk on your phone and open it to install. Allow installs from your browser/files app if Android asks.<!-- muriel-downloads-before: $before --><!-- muriel-version: $ver -->"
 diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
-index 73594a6..2fc43e5 100644
+index 73594a6..0d5a014 100644
 --- a/.github/workflows/release.yml
 +++ b/.github/workflows/release.yml
 @@ -1,14 +1,16 @@
@@ -138,7 +189,7 @@ index 73594a6..2fc43e5 100644
          required: true
  
  env:
-@@ -17,45 +19,108 @@ env:
+@@ -17,45 +19,114 @@ env:
  permissions:
    contents: write
  
@@ -255,23 +306,29 @@ index 73594a6..2fc43e5 100644
 +          IPA_NAME: Muriel.ipa
 +        run: node .github/sidestore-source.js
 +
-+      - name: Create the release if needed
++      - name: Render the release notes
++        run: sed "s/__VERSION__/$VERSION/g" .github/release-notes-ios.md > release-notes-ios.md
++
++      - name: Create or update the release
 +        env:
 +          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 +        run: |
 +          if gh release view "$TAG" >/dev/null 2>&1; then
-+            echo "Release $TAG already exists; adding the IPA."
++            echo "Release $TAG already exists; updating its notes."
++            gh release edit "$TAG" \
++              --title "Muriel Legacy iOS ${TAG#v}" \
++              --notes-file release-notes-ios.md
 +          elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
 +            echo "Creating release $TAG for the existing tag."
 +            gh release create "$TAG" \
 +              --title "Muriel Legacy iOS ${TAG#v}" \
-+              --notes "$(printf 'Muriel Legacy iOS %s.\n\nUnsigned IPA for iOS 15.0 and later. Install it with TrollStore on supported devices/firmware (no Apple ID, no 7-day expiry), or sign it with Sideloadly, AltStore or SideStore using your Apple ID. Free Apple IDs need re-signing every 7 days.\n\nThe SHA-256 of Muriel.ipa is in Muriel.ipa.sha256. See the repository README for details.' "${TAG#v}")"
++              --notes-file release-notes-ios.md
 +          else
 +            echo "Creating tag $TAG and its release."
 +            gh release create "$TAG" \
 +              --target "$GITHUB_SHA" \
 +              --title "Muriel Legacy iOS ${TAG#v}" \
-+              --notes "$(printf 'Muriel Legacy iOS %s.\n\nUnsigned IPA for iOS 15.0 and later. Install it with TrollStore on supported devices/firmware (no Apple ID, no 7-day expiry), or sign it with Sideloadly, AltStore or SideStore using your Apple ID. Free Apple IDs need re-signing every 7 days.\n\nThe SHA-256 of Muriel.ipa is in Muriel.ipa.sha256. See the repository README for details.' "${TAG#v}")"
++              --notes-file release-notes-ios.md
 +          fi
 +
 +      - name: Upload the IPA, checksum and SideStore source

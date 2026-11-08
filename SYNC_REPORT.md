@@ -278,7 +278,7 @@ build the app:
 
 | Workflow | Trigger | Output |
 | --- | --- | --- |
-| `release.yml` | `v*` tag or manual version | Versioned GitHub release with `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`. |
+| `release.yml` | `v*` tag or manual version | Versioned GitHub release with `Muriel.ipa`, `Muriel.ipa.sha256` and `sidestore.json`, using `.github/release-notes-ios.md` for the notes. |
 | `ios.yml` | push to `main` | Rolling `ios-latest` release with the same three assets. |
 | `build-ios15-ipa.yml` | manual branch build | `Muriel-iOS15-IPA` artifact containing the IPA and checksum. |
 
