@@ -45,7 +45,10 @@ Apply with `git apply --3way` from the repository root, in this order:
    menu for Select/Download all), and reduces the playlist header to Play,
    Shuffle, Share (with Export JSON), icon-only Download all, Like all, a `...`
    menu (Select, duplicates, manual/sort order) and Delete, with rename moved to
-   a tap on the playlist name. This patch now includes `index.html`.
+   a tap on the playlist name. This patch now includes `index.html`. The seventh
+   device pass makes the virtualised lists reuse their row elements while
+   scrolling (covers are no longer rebuilt and reloaded) and turns the playlist
+   "Like all" heart into an add/remove toggle with a confirmation dialog.
 
 The patch files live on the iOS 15 branch, not on `upstream/main`, so copy them
 out of the repository **before** switching branches:

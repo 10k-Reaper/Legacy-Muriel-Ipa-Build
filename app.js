@@ -7874,7 +7874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       row.innerHTML = `
       <span class="track-row-index">${(isAlbum && track.no) ? track.no : (idx + 1)}</span>
-      ${!isAlbum ? `<img class="track-row-thumb" src="${escapeHtml(listThumb(rowThumb) || '')}" data-full="${escapeHtml(rowThumb || '')}" data-saved="${escapeHtml(track.thumbnail || '')}" data-art="${escapeHtml(JSON.stringify(trackArtCandidates(track)))}" alt="" loading="lazy" decoding="async" onerror="${THUMB_FALLBACK}">` : ''}
+      ${!isAlbum ? `<img class="track-row-thumb" src="${escapeHtml(listThumb(rowThumb) || '')}" data-full="${escapeHtml(rowThumb || '')}" data-saved="${escapeHtml(track.thumbnail || '')}" data-art="${escapeHtml(JSON.stringify(trackArtCandidates(track)))}" alt="" decoding="async" onerror="${THUMB_FALLBACK}">` : ''}
       <div class="track-row-info">
       <span class="track-row-title">${escapeHtml(track.title || 'untitled')}</span>
       ${explicitTag ? `<span class="track-row-artist-wrap">${explicitTag}${artistSpan}</span>` : artistSpan}
@@ -7970,6 +7970,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const isFavNow = state.favorites.some(f => isSameSong(f, track));
             const svg = btnFav.querySelector('svg');
             if (svg) svg.setAttribute('fill', isFavNow ? 'currentColor' : 'none');
+            updatePlaylistFavAllButton();
           });
         }
 
@@ -8161,6 +8162,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const on = state.favorites.some(f => isSameSong(f, track));
         const svg = row.querySelector('.btn-row-fav svg');
         if (svg) svg.setAttribute('fill', on ? 'currentColor' : 'none');
+        updatePlaylistFavAllButton();
       } }
     ];
     if (track.artist && !/^unknown artist$/i.test(track.artist)) {
@@ -8274,11 +8276,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       scrollParent.removeEventListener('scroll', container._vScrollHandler);
     }
     
-    container.innerHTML = '';
-    // the first paint may fade covers in; later virtualised re-renders must not replay it (the list flashed)
-    container.classList.remove('no-thumb-fade');
-    
+    // a fresh list (new data, sort or filter) may reuse nothing: every row belongs to the previous track array
+    container._rowPool = new Map();
+
     if (!tracks || tracks.length === 0) {
+      container.innerHTML = '';
       container.style.paddingTop = '0px';
       container.style.paddingBottom = '0px';
       const emptyMessages = {
@@ -8316,19 +8318,38 @@ document.addEventListener('DOMContentLoaded', async () => {
       container._lastEndIndex = endIndex;
       
       const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
-      if (container._hasInitialRendered) container.classList.add('no-thumb-fade');
+      // Reuse the row elements that are already on screen. Rebuilding them dropped every cover <img>, so iOS
+      // reloaded and repainted each one on every scroll step and the list flashed. Moving an existing row keeps
+      // its decoded image untouched; only rows entering the overscan area are created.
+      const pool = container._rowPool || new Map();
+      const nextPool = new Map();
       const fragment = document.createDocumentFragment();
       for (let idx = startIndex; idx < endIndex; idx++) {
-         const track = tracks[idx];
-         const row = createTrackRow(track, idx, currentCanonicalId, context, tracks, container);
-         if (container._hasInitialRendered) row.style.animation = 'none';
-         fragment.appendChild(row);
+        const track = tracks[idx];
+        let row = pool.get(idx);
+        if (row && row._trackRef !== track) row = null;
+        if (!row) {
+          row = createTrackRow(track, idx, currentCanonicalId, context, tracks, container);
+          row._trackRef = track;
+          if (container._hasInitialRendered) row.style.animation = 'none';
+        }
+        nextPool.set(idx, row);
+        fragment.appendChild(row);
       }
-      
-      container.innerHTML = '';
+
+      // keep a screen or so either side so a quick flick back reuses the same covers instead of rebuilding them
+      const keepFrom = Math.max(0, startIndex - 60);
+      const keepTo = Math.min(tracks.length, endIndex + 60);
+      pool.forEach((row, idx) => {
+        if (idx >= keepFrom && idx < keepTo && !nextPool.has(idx)) nextPool.set(idx, row);
+      });
+      container._rowPool = nextPool;
+
       container.style.paddingTop = `${startIndex * itemHeight}px`;
       container.style.paddingBottom = `${(tracks.length - endIndex) * itemHeight}px`;
-      container.appendChild(fragment);
+      // replaceChildren removes the rows that scrolled away and installs the reused ones in one paint
+      if (typeof container.replaceChildren === 'function') container.replaceChildren(fragment);
+      else { container.innerHTML = ''; container.appendChild(fragment); }
       container._hasInitialRendered = true;
       highlightPlayingRow();
     }
@@ -9771,6 +9792,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (el.playlistSort) { el.playlistSort.value = getTrackSortMode('playlist'); syncSortDropdown('playlist'); }
     renderPlaylistDescription(pl);
     renderPlaylistDuplicateButton(pl);
+    updatePlaylistFavAllButton();
     const totalSec = (pl.tracks || []).reduce((acc, t) => acc + (t.duration || 0), 0);
     const durStr = totalSec > 0 ? ` • ${formatDuration(totalSec)}` : '';
     if (el.playlistDetailCount) el.playlistDetailCount.textContent = (query ? `${filtered.length} of ${pl.tracks.length} tracks` : `${pl.tracks.length} tracks`) + durStr;
@@ -9917,28 +9939,90 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnShufflePlaylist = document.getElementById('btn-shuffle-playlist');
   if (btnShufflePlaylist) btnShufflePlaylist.addEventListener('click', () => playOpenPlaylist(true));
 
+  // How many songs of a playlist are already liked, so the header heart can add the rest or take them back.
+  function playlistFavoriteStats(pl) {
+    const tracks = (pl && Array.isArray(pl.tracks)) ? pl.tracks : [];
+    let liked = 0;
+    tracks.forEach((t) => { if (state.favorites.some(f => isSameSong(f, t))) liked++; });
+    return { total: tracks.length, liked, missing: tracks.length - liked, all: tracks.length > 0 && liked === tracks.length };
+  }
+
+  function updatePlaylistFavAllButton() {
+    const btn = document.getElementById('btn-fav-all-playlist');
+    if (!btn) return;
+    const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+    const stats = playlistFavoriteStats(pl);
+    const svg = btn.querySelector('svg');
+    if (svg) svg.setAttribute('fill', stats.all ? 'currentColor' : 'none');
+    const label = T(stats.all ? 'Remove all from favorites' : 'Add all to favorites');
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.classList.toggle('is-favorited', stats.all);
+  }
+
   (function setupFavAllPlaylist() {
     const btn = document.getElementById('btn-fav-all-playlist');
     if (!btn) return;
-    btn.addEventListener('click', () => {
-      const pl = state.playlists.find(p => p.id === state.currentPlaylistId);
+    const modal = document.getElementById('favorites-all-modal');
+    const titleEl = document.getElementById('favorites-all-title');
+    const msgEl = document.getElementById('favorites-all-msg');
+    const confirmBtn = document.getElementById('btn-confirm-favorites-all');
+    const cancelBtn = document.getElementById('btn-cancel-favorites-all');
+    let pending = 'add';
+
+    const currentPlaylist = () => state.playlists.find(p => p.id === state.currentPlaylistId);
+
+    const apply = () => {
+      const pl = currentPlaylist();
       if (!pl || !pl.tracks) return;
-      let added = 0;
-      for (let i = pl.tracks.length - 1; i >= 0; i--) {
-        const track = pl.tracks[i];
-        if (!state.favorites.some(f => isSameSong(f, track))) {
-          state.favorites.unshift(stampAddedAt(track));
-          added++;
+      const stats = playlistFavoriteStats(pl);
+      if (pending === 'remove') {
+        state.favorites = state.favorites.filter(f => !pl.tracks.some(t => isSameSong(f, t)));
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+        showToast(Tf('Removed {0} songs from favorites', stats.liked), 'info');
+      } else {
+        let added = 0;
+        for (let i = pl.tracks.length - 1; i >= 0; i--) {
+          const track = pl.tracks[i];
+          if (!state.favorites.some(f => isSameSong(f, track))) {
+            state.favorites.unshift(stampAddedAt(track));
+            added++;
+          }
         }
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+        showToast(added === 1 ? Tm('Added 1 song to favorites') : Tf('Added {0} songs to favorites', added), 'success');
       }
-      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
       updateFavoritesBadge();
       updateFavoriteIcon();
-      btn.title = Tf('{0} added to favorites', added);
-      const old = btn.style.color;
-      btn.style.color = '#ff6b8a';
-      setTimeout(() => { btn.style.color = old; btn.title = T('Add all to favorites'); }, 2500);
+      if (state.currentView === 'favorites') renderFavoritesView();
+      if (state.currentView === 'playlist-detail') openPlaylistDetail(state.currentPlaylistId);
+      updatePlaylistFavAllButton();
+    };
+
+    btn.addEventListener('click', () => {
+      const pl = currentPlaylist();
+      const stats = playlistFavoriteStats(pl);
+      if (!stats.total) return;
+      pending = stats.all ? 'remove' : 'add';
+      const name = (pl && pl.name) || T('this playlist');
+      if (titleEl) titleEl.textContent = T(pending === 'remove' ? 'Remove all from favorites' : 'Add all to favorites');
+      if (msgEl) {
+        msgEl.textContent = pending === 'remove'
+          ? Tf('Remove all {0} songs in "{1}" from your favorites?', stats.total, name)
+          : (stats.liked > 0
+            ? Tf('Add the remaining {0} of {1} songs in "{2}" to your favorites?', stats.missing, stats.total, name)
+            : Tf('Add all {0} songs in "{1}" to your favorites?', stats.total, name));
+      }
+      if (confirmBtn) {
+        confirmBtn.textContent = T(pending === 'remove' ? 'Remove' : 'Add');
+        confirmBtn.classList.toggle('danger', pending === 'remove');
+      }
+      if (modal) openModal(modal);
+      else if (window.confirm(msgEl ? msgEl.textContent : name)) apply();
     });
+
+    if (cancelBtn && modal) cancelBtn.addEventListener('click', () => closeModal(modal));
+    if (confirmBtn && modal) confirmBtn.addEventListener('click', () => { closeModal(modal); apply(); });
   })();
 
   (function setupPlaylistRename() {

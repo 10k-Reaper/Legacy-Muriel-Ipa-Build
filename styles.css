@@ -8297,13 +8297,6 @@ html.theme-vt::view-transition-new(root) {
 :is(.track-row-thumb, .my-wave-track-cover, .quick-play-pill-img):not(.is-loaded) {
   opacity: 0;
 }
-/* virtualised lists rebuild their rows on every scroll step; a cover that was already visible must not fade
-   in again each time (Queue and Favorites flashed while scrolling) */
-.tracks-list.no-thumb-fade .track-row-thumb,
-.tracks-list.no-thumb-fade .track-row-thumb:not(.is-loaded) {
-  opacity: 1 !important;
-  transition: none !important;
-}
 
 .track-row.playing {
   transition: background-color 260ms cubic-bezier(0.2, 0, 0, 1), transform 0.12s cubic-bezier(0.2, 0, 0, 1);

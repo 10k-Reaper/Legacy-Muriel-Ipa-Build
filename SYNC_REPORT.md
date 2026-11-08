@@ -139,8 +139,9 @@ Merge `sync/upstream-2df82f5` into `main` only after:
    `minos 15.0`.~~ Passed.
 3. ~~An iOS 15 device smoke test passes.~~ Passed on iPhone XR / iOS 15.4.1.
 4. The karaoke follow-up build (patch 9) succeeds on macOS and the fixes in all
-   patch-9 tables pass on the iPhone, including the sixth pass (cover flashing,
-   Favorites scrolling/toolbar, and the reduced playlist header).
+   patch-9 tables pass on the iPhone, including the sixth and seventh passes
+   (scrolling covers, Favorites toolbar, reduced playlist header, and the
+   add/remove Like-all confirmation).
 5. `npm test` is re-run on a non-Windows environment (or the five failures are
    confirmed as pre-existing environment issues).
 
@@ -230,3 +231,18 @@ fixed in the same cumulative patch 9 (which now also carries `index.html`):
 `npm run check:ios15`, `node --check app.js`, `node --check mobile/mobile-ui.js`
 and `node mobile/build.mjs` pass with the same four expected warnings. This pass
 needs a fresh macOS build and an iPhone check before the merge.
+
+## Seventh iPhone pass (patch 9, cumulative)
+
+The sixth-pass build confirmed the Favorites toolbar and the trimmed playlist
+header, but scrolling still made covers blink and the playlist heart could only
+add favorites. Both are fixed in the same cumulative patch 9:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Cover art in every scrolling track list (Queue, Now Playing queue, Favorites, playlists, search, history, local) still popped in and out while scrolling, even though the fade had been disabled. | The virtualised renderer rebuilt the whole visible chunk every five rows and dropped every row element. Each cover was therefore a brand-new `<img>` with `loading="lazy"`, so iOS had to restart the lazy load and repaint it during the scroll. Forcing opacity to 1 only hid the fade, not the re-created image. | `renderTracks()` now keeps a row pool. A scroll step reuses the row element for every track that is still in range (validated against the track object) and only creates rows entering the overscan area, then installs them with `replaceChildren()`. A screenful of rows is kept on each side so flicking back reuses the same covers. Row covers also load eagerly, because rows are only created when they are near the viewport. The `no-thumb-fade` workaround is gone; a cover fades in once when it is genuinely new and is never rebuilt while scrolling. |
+| The playlist "Like all" heart could only add songs. An accidental tap could not be undone, and it gave no confirmation. | The button looped over the playlist and inserted missing tracks only. | The button now reflects the playlist: when every song is already liked it is filled and removes them, otherwise it adds the missing ones. Either action opens a confirmation dialog ("Add the remaining X of Y songs..." / "Remove all N songs..."), with Cancel and a matching Add/Remove button. The state is refreshed after row hearts, context-menu hearts, playlist changes and the bulk action. |
+
+`node --check app.js`, `node --check mobile/mobile-ui.js`, `node mobile/build.mjs`
+and `npm run check:ios15` pass with the same four expected warnings. This pass
+also needs a fresh macOS build and an iPhone check before the merge.
